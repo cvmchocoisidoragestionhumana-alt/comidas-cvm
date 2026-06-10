@@ -1,0 +1,43 @@
+{
+  "rules": {
+    ".read": "auth != null",
+    "usuarios": {
+      "$uid": {
+        ".read": "auth != null && auth.uid == $uid",
+        ".write": false
+      }
+    },
+    "nomina": {
+      ".read": "auth != null",
+      ".write": "auth != null && root.child('usuarios').child(auth.uid).child('rol').val() == 'RRHH'"
+    },
+    "dias": {
+      ".read": "auth != null",
+      "$fecha_meal": {
+        ".write": "auth != null",
+        "auth": {
+          ".write": "root.child('usuarios').child(auth.uid).child('rol').val() == 'RRHH'"
+        },
+        "excluidos": {
+          ".write": "root.child('usuarios').child(auth.uid).child('rol').val() == 'RRHH'"
+        },
+        "eventuales": {
+          ".write": "root.child('usuarios').child(auth.uid).child('rol').val() == 'RRHH'"
+        },
+        "seguridad": {
+          ".write": "root.child('usuarios').child(auth.uid).child('rol').val() == 'RRHH'"
+        },
+        "entregado": {
+          ".write": "auth != null"
+        },
+        "obs": {
+          ".write": "auth != null"
+        }
+      }
+    },
+    "cierres": {
+      ".read": "auth != null",
+      ".write": "auth != null && root.child('usuarios').child(auth.uid).child('rol').val() == 'RRHH'"
+    }
+  }
+}

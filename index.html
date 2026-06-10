@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Control de Comidas - CVM PIM III</title>
+<style>
+:root{--azul:#185FA5;--azulbg:#E6F1FB;--ambar:#854F0B;--ambarbg:#FAEEDA;--verde:#27500A;--verdebg:#EAF3DE;--rojo:#A32D2D;--rojobg:#FCEBEB;--gris:#5F5E5A;--grisbg:#F1EFE8;--borde:#D3D1C7;--texto:#2C2C2A;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:Arial,Helvetica,sans-serif;color:var(--texto);background:#F7F6F2;font-size:14px;line-height:1.5;}
+.topbar{background:var(--azul);color:#fff;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;}
+.topbar h1{font-size:16px;font-weight:bold;}
+.topbar .sub{font-size:11px;opacity:.85;}
+.userbox{display:flex;gap:10px;align-items:center;font-size:12px;}
+.userbox button{background:rgba(255,255,255,.15);color:#fff;border:1px solid rgba(255,255,255,.3);padding:5px 10px;border-radius:6px;font-size:12px;cursor:pointer;}
+.rolebadge{background:#fff;color:var(--azul);padding:3px 10px;border-radius:10px;font-weight:bold;}
+.wrap{max-width:1100px;margin:0 auto;padding:14px;}
+.tabs{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;border-bottom:1px solid var(--borde);}
+.tabs button{background:none;border:none;padding:10px 14px;font-size:13px;cursor:pointer;color:var(--gris);border-bottom:2px solid transparent;}
+.tabs button.active{color:var(--azul);border-bottom-color:var(--azul);font-weight:bold;}
+.tabs button:disabled{opacity:.35;cursor:not-allowed;}
+.card{background:#fff;border:1px solid var(--borde);border-radius:10px;padding:16px;margin-bottom:14px;}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px;}
+.kpi{background:var(--grisbg);border-radius:8px;padding:12px;}
+.kpi .l{font-size:11px;color:var(--gris);}
+.kpi .v{font-size:24px;font-weight:bold;}
+.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;}
+.bar label{font-size:12px;color:var(--gris);}
+select,input[type=text],input[type=date],input[type=number],input[type=password],input[type=email]{padding:7px 9px;border:1px solid var(--borde);border-radius:6px;font-size:13px;font-family:inherit;}
+.mealbtn{padding:6px 12px;border:1px solid var(--borde);background:#fff;border-radius:6px;font-size:12px;cursor:pointer;}
+.mealbtn.active{background:var(--azulbg);color:var(--azul);border-color:var(--azul);font-weight:bold;}
+button.act{padding:7px 12px;border:1px solid var(--borde);background:#fff;border-radius:6px;font-size:13px;cursor:pointer;}
+button.act:hover{background:var(--grisbg);}
+button.prim{background:var(--azul);color:#fff;border-color:var(--azul);}
+button.prim:hover{background:#0C447C;}
+table{width:100%;border-collapse:collapse;font-size:12px;}
+th{background:var(--azul);color:#fff;padding:8px 6px;text-align:left;font-weight:bold;position:sticky;top:0;}
+td{padding:6px;border-bottom:1px solid #eee;}
+tr:hover td{background:#fafafa;}
+.tablewrap{max-height:440px;overflow:auto;border:1px solid var(--borde);border-radius:8px;}
+.pill{display:inline-block;font-size:10px;padding:2px 7px;border-radius:10px;font-weight:bold;}
+.p-conf{background:var(--verdebg);color:var(--verde);}
+.p-noc{background:var(--ambarbg);color:var(--ambar);}
+.p-sin{background:var(--rojobg);color:var(--rojo);}
+.p-ev{background:var(--azulbg);color:var(--azul);}
+.chk{width:18px;height:18px;cursor:pointer;}
+.banner{padding:8px 12px;border-radius:6px;font-size:12px;margin-bottom:12px;}
+.banner.rrhh{background:var(--azulbg);color:var(--azul);}
+.banner.contrata{background:var(--ambarbg);color:var(--ambar);}
+.obs{width:100%;padding:4px 6px;border:1px solid var(--borde);border-radius:4px;font-size:11px;font-family:inherit;}
+.muted{color:var(--gris);font-size:11px;}
+.danger{color:var(--rojo);}
+.hidden{display:none;}
+h2{font-size:15px;margin-bottom:10px;}
+.evrow{display:grid;grid-template-columns:1.4fr 1fr auto;gap:8px;margin-bottom:8px;}
+.note{font-size:11px;color:var(--gris);background:var(--grisbg);padding:8px 10px;border-radius:6px;margin-top:8px;}
+.syncing{font-size:11px;color:var(--gris);}
+/* login */
+#login{position:fixed;inset:0;background:#F7F6F2;display:flex;align-items:center;justify-content:center;z-index:100;}
+.loginbox{background:#fff;border:1px solid var(--borde);border-radius:12px;padding:28px;width:340px;max-width:90vw;}
+.loginbox h1{font-size:18px;color:var(--azul);margin-bottom:4px;}
+.loginbox .sub{font-size:12px;color:var(--gris);margin-bottom:18px;}
+.loginbox label{font-size:12px;color:var(--gris);display:block;margin:10px 0 4px;}
+.loginbox input{width:100%;}
+.loginbox button{width:100%;margin-top:18px;padding:10px;}
+.loginerr{color:var(--rojo);font-size:12px;margin-top:10px;min-height:16px;}
+</style>
+</head>
+<body>
+
+<div id="login">
+  <div class="loginbox">
+    <h1>Control de Comidas</h1>
+    <div class="sub">CVM PIM III Choco-Isidora &middot; CVG MINERVEN</div>
+    <label>Correo</label>
+    <input type="email" id="li-email" placeholder="usuario@cvm.com" autocomplete="username">
+    <label>Contrase&ntilde;a</label>
+    <input type="password" id="li-pass" placeholder="contrase&ntilde;a" autocomplete="current-password">
+    <button class="act prim" onclick="doLogin()">Entrar</button>
+    <div class="loginerr" id="li-err"></div>
+  </div>
+</div>
+
+<div id="app" class="hidden">
+<div class="topbar">
+  <div><h1>Control de Entregas de Comidas</h1><div class="sub">CVM PIM III Choco-Isidora &middot; CVG MINERVEN</div></div>
+  <div class="userbox">
+    <span id="u-email"></span>
+    <span class="rolebadge" id="u-rol"></span>
+    <span class="syncing" id="sync"></span>
+    <button onclick="doLogout()">Salir</button>
+  </div>
+</div>
+<div class="wrap">
+  <div id="banner-rrhh" class="banner rrhh">Modo RRHH &mdash; control total: autoriza la lista, define comidas, agrega eventuales/seguridad y consolida.</div>
+  <div id="banner-contrata" class="banner contrata hidden">Modo Contrata &mdash; solo puedes marcar Entregado y dejar observacion.</div>
+
+  <div class="tabs">
+    <button id="t-auth" class="active" onclick="tab('auth')">1 &middot; Autorizar lista</button>
+    <button id="t-entrega" onclick="tab('entrega')">2 &middot; Entrega</button>
+    <button id="t-concilia" onclick="tab('concilia')">3 &middot; Conciliacion</button>
+    <button id="t-eventuales" onclick="tab('eventuales')">Eventuales</button>
+    <button id="t-seguridad" onclick="tab('seguridad')">Cuerpos de seguridad</button>
+    <button id="t-cierre" onclick="tab('cierre')">Cierre mensual</button>
+  </div>
+
+  <div class="bar">
+    <label>Fecha</label><input type="date" id="fecha" onchange="onDateChange()">
+    <label>Comida</label>
+    <button class="mealbtn" data-m="Desayuno" onclick="setMeal('Desayuno')">Desayuno</button>
+    <button class="mealbtn active" data-m="Almuerzo" onclick="setMeal('Almuerzo')">Almuerzo</button>
+    <button class="mealbtn" data-m="Cena" onclick="setMeal('Cena')">Cena</button>
+    <label style="margin-left:auto;">Planta</label>
+    <select id="fplanta" onchange="render()"><option value="">Todas</option><option>CHOCO</option><option>ISIDORA</option></select>
+    <select id="fger" onchange="render()"><option value="">Todas las gerencias</option></select>
+  </div>
+
+  <div id="view-auth"></div>
+  <div id="view-entrega" class="hidden"></div>
+  <div id="view-concilia" class="hidden"></div>
+  <div id="view-eventuales" class="hidden"></div>
+  <div id="view-seguridad" class="hidden"></div>
+  <div id="view-cierre" class="hidden"></div>
+</div>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="firebase-config.js"></script>
+<script src="nomina-data.js"></script>
+<script>
+const COL={ced:0,nom:1,ger:2,grupo:3,fam:4,planta:5,mask:6};
+const MEALBIT={Desayuno:1,Almuerzo:2,Cena:4};
+const ORGANISMOS=['Guardia Nacional','DGCIM','GPAMO','Escuela DGCIM'];
+const NOMINA=NOMINA_RAW.map(a=>({ced:a[0],nom:a[1],ger:a[2],grupo:a[3],fam:a[4],planta:a[5],mask:a[6]}));
+
+let ROLE=null, MEAL='Almuerzo', TAB='auth';
+let CUR={};            // estado del dia+comida actual (sincronizado con Firebase)
+let curRef=null;       // referencia firebase del dia+comida actual
+const today=new Date().toISOString().slice(0,10);
+
+// ---------- AUTENTICACION ----------
+function doLogin(){
+  const e=document.getElementById('li-email').value.trim();
+  const p=document.getElementById('li-pass').value;
+  document.getElementById('li-err').textContent='';
+  auth.signInWithEmailAndPassword(e,p).catch(err=>{
+    document.getElementById('li-err').textContent='Correo o contrasena incorrectos.';
+  });
+}
+function doLogout(){auth.signOut();}
+
+auth.onAuthStateChanged(user=>{
+  if(user){
+    db.ref('usuarios/'+user.uid+'/rol').get().then(snap=>{
+      ROLE=snap.exists()?snap.val():'CONTRATA';
+      document.getElementById('u-email').textContent=user.email;
+      document.getElementById('u-rol').textContent=ROLE;
+      document.getElementById('login').classList.add('hidden');
+      document.getElementById('app').classList.remove('hidden');
+      applyRole();
+      document.getElementById('fecha').value=today;
+      gerOptions();
+      bindDay();
+    });
+  }else{
+    ROLE=null;
+    document.getElementById('app').classList.add('hidden');
+    document.getElementById('login').classList.remove('hidden');
+    if(curRef){curRef.off();curRef=null;}
+  }
+});
+
+function applyRole(){
+  const c=(ROLE==='CONTRATA');
+  document.getElementById('banner-rrhh').classList.toggle('hidden',c);
+  document.getElementById('banner-contrata').classList.toggle('hidden',!c);
+  document.getElementById('t-auth').disabled=c;
+  document.getElementById('t-eventuales').disabled=c;
+  document.getElementById('t-seguridad').disabled=c;
+  document.getElementById('t-cierre').disabled=c;
+  if(c){tab('entrega');}else{tab('auth');}
+}
+
+// ---------- SINCRONIZACION CON FIREBASE ----------
+function dayKey(){return document.getElementById('fecha').value+'_'+MEAL;}
+function emptyDay(){return {auth:{},entregado:{},obs:{},eventuales:[],seguridad:{},excluidos:{}};}
+
+function bindDay(){
+  if(curRef)curRef.off();
+  const k=dayKey();
+  curRef=db.ref('dias/'+k);
+  setSync('cargando...');
+  curRef.on('value',snap=>{
+    const v=snap.val()||{};
+    CUR={
+      auth:v.auth||{}, entregado:v.entregado||{}, obs:v.obs||{},
+      eventuales:v.eventuales||[], seguridad:v.seguridad||{}, excluidos:v.excluidos||{}
+    };
+    setSync('sincronizado');
+    render();
+  });
+}
+function setSync(t){document.getElementById('sync').textContent=t;}
+
+// helpers de escritura segun rol (las reglas de Firebase tambien lo protegen)
+function wAuth(obj){db.ref('dias/'+dayKey()+'/auth').set(obj);}
+function wExcl(obj){db.ref('dias/'+dayKey()+'/excluidos').set(obj);}
+function wEvent(arr){db.ref('dias/'+dayKey()+'/eventuales').set(arr);}
+function wSeg(obj){db.ref('dias/'+dayKey()+'/seguridad').set(obj);}
+function wEnt(ced,val){const r=db.ref('dias/'+dayKey()+'/entregado/'+ced);val?r.set(true):r.remove();}
+function wObs(ced,val){const r=db.ref('dias/'+dayKey()+'/obs/'+ced);val?r.set(val):r.remove();}
+
+// ---------- NAVEGACION ----------
+function onDateChange(){bindDay();}
+function setMeal(m){MEAL=m;document.querySelectorAll('.mealbtn').forEach(b=>b.classList.toggle('active',b.dataset.m===m));bindDay();}
+function tab(t){
+  TAB=t;
+  ['auth','entrega','concilia','eventuales','seguridad','cierre'].forEach(x=>{
+    document.getElementById('view-'+x).classList.toggle('hidden',x!==t);
+    document.getElementById('t-'+x).classList.toggle('active',x===t);
+  });
+  render();
+}
+function elig(){return NOMINA.filter(p=>p.mask & MEALBIT[MEAL]);}
+function filtered(){
+  const fp=document.getElementById('fplanta').value, fg=document.getElementById('fger').value;
+  return elig().filter(p=>(!fp||p.planta===fp)&&(!fg||p.ger===fg));
+}
+function gerOptions(){
+  const sel=document.getElementById('fger');
+  const gers=[...new Set(NOMINA.map(p=>p.ger))].sort();
+  sel.innerHTML='<option value="">Todas las gerencias</option>'+gers.map(g=>'<option>'+g+'</option>').join('');
+}
+function render(){
+  if(!ROLE)return;
+  if(TAB==='auth')renderAuth();
+  if(TAB==='entrega')renderEntrega();
+  if(TAB==='concilia')renderConcilia();
+  if(TAB==='eventuales')renderEventuales();
+  if(TAB==='seguridad')renderSeguridad();
+  if(TAB==='cierre')renderCierre();
+}
+
+// ---------- 1. AUTORIZAR ----------
+function renderAuth(){
+  const list=filtered();
+  const v=document.getElementById('view-auth');
+  let html='<div class="card"><h2>Autorizar lista del dia &mdash; '+MEAL+'</h2>';
+  html+='<div class="muted">Marca quien tiene derecho a '+MEAL.toLowerCase()+'. Usa Excluir para reposo, vacaciones o permiso: no aparece para el comedor y queda el motivo.</div>';
+  html+='<div style="margin:10px 0;"><button class="act prim" onclick="authAll(true)">Autorizar todos los visibles</button> <button class="act" onclick="authAll(false)">Quitar todos</button> <span class="muted" id="auth-count"></span></div>';
+  html+='<div class="tablewrap"><table><thead><tr><th>Auth</th><th>Cedula</th><th>Nombre</th><th>Gerencia</th><th>Grupo</th><th>Estado / Excluir</th></tr></thead><tbody>';
+  list.slice(0,1200).forEach(p=>{
+    const exc=CUR.excluidos[p.ced];
+    const on=CUR.auth[p.ced] && !exc;
+    let estado;
+    if(exc){estado='<span class="pill p-sin">'+exc+'</span> <button class="act" style="padding:3px 7px;font-size:11px;" data-c="'+p.ced+'" onclick="reincorporar(this.getAttribute(\'data-c\'))">Reincorporar</button>';}
+    else{estado='<select class="obs" style="width:auto;" data-c="'+p.ced+'" onchange="excluir(this.getAttribute(\'data-c\'),this.value);this.value=\'\'"><option value="">Excluir...</option><option>Reposo</option><option>Vacaciones</option><option>Permiso</option><option>Otro</option></select>';}
+    const chk=exc?'<span class="muted">&mdash;</span>':'<input type="checkbox" class="chk" '+(on?'checked':'')+' data-c="'+p.ced+'" onchange="toggleAuth(this.getAttribute(\'data-c\'))">';
+    const op=exc?' style="opacity:.5;"':'';
+    html+='<tr'+op+'><td>'+chk+'</td><td>'+p.ced+'</td><td>'+p.nom+'</td><td>'+p.ger+'</td><td>'+p.grupo+'</td><td>'+estado+'</td></tr>';
+  });
+  html+='</tbody></table></div></div>';
+  html+='<div class="card"><h2>Cantidades autorizadas por gerencia</h2><div class="muted">Cuadra este numero contra lo que firmo el gerente. No incluye excluidos.</div><div class="tablewrap" style="max-height:280px;margin-top:8px;"><table><thead><tr><th>Gerencia</th><th>Elegibles</th><th>Autorizados</th><th>Excluidos</th></tr></thead><tbody id="auth-resumen"></tbody></table></div></div>';
+  v.innerHTML=html;
+  updateAuthResumen();
+}
+function toggleAuth(ced){if(CUR.excluidos[ced])return;const a={...CUR.auth};if(a[ced])delete a[ced];else a[ced]=true;wAuth(a);}
+function authAll(on){const a={...CUR.auth};filtered().forEach(p=>{if(CUR.excluidos[p.ced])return;if(on)a[p.ced]=true;else delete a[p.ced];});wAuth(a);}
+function excluir(ced,motivo){if(!motivo)return;const x={...CUR.excluidos};x[ced]=motivo;const a={...CUR.auth};delete a[ced];wExcl(x);wAuth(a);}
+function reincorporar(ced){const x={...CUR.excluidos};delete x[ced];wExcl(x);}
+function updateAuthResumen(){
+  const authN=Object.keys(CUR.auth).length, excN=Object.keys(CUR.excluidos).length;
+  const ec=document.getElementById('auth-count');if(ec)ec.textContent='Autorizados: '+authN+'  |  Excluidos: '+excN;
+  const by={};
+  elig().forEach(p=>{by[p.ger]=by[p.ger]||{e:0,a:0,x:0};by[p.ger].e++;if(CUR.auth[p.ced])by[p.ger].a++;if(CUR.excluidos[p.ced])by[p.ger].x++;});
+  const tb=document.getElementById('auth-resumen');
+  if(tb)tb.innerHTML=Object.keys(by).sort().map(g=>'<tr><td>'+g+'</td><td>'+by[g].e+'</td><td><b>'+by[g].a+'</b></td><td class="danger">'+(by[g].x||'')+'</td></tr>').join('');
+}
+
+// ---------- 2. ENTREGA ----------
+function renderEntrega(){
+  const v=document.getElementById('view-entrega');
+  const authList=filtered().filter(p=>CUR.auth[p.ced]);
+  if(authList.length===0){
+    v.innerHTML='<div class="card"><h2>Entrega &mdash; '+MEAL+'</h2><div class="note danger">No hay lista autorizada para '+MEAL+' en esta fecha/filtro. RRHH debe autorizar primero.</div></div>';
+    return;
+  }
+  const ent=authList.filter(p=>CUR.entregado[p.ced]).length;
+  let html='<div class="kpis"><div class="kpi"><div class="l">Autorizados</div><div class="v">'+authList.length+'</div></div><div class="kpi"><div class="l">Entregados</div><div class="v">'+ent+'</div></div><div class="kpi"><div class="l">Pendientes</div><div class="v">'+(authList.length-ent)+'</div></div></div>';
+  html+='<div class="card"><h2>Entrega &mdash; '+MEAL+'</h2><input type="text" id="buscaent" placeholder="Buscar cedula o nombre..." style="width:100%;margin-bottom:10px;" oninput="renderEntrega2()"><div id="ent-list"></div></div>';
+  v.innerHTML=html;
+  renderEntrega2();
+}
+function renderEntrega2(){
+  const q=(document.getElementById('buscaent')||{value:''}).value.toLowerCase().trim();
+  let list=filtered().filter(p=>CUR.auth[p.ced]);
+  if(q)list=list.filter(p=>p.ced.includes(q)||p.nom.toLowerCase().includes(q));
+  let html='<div class="tablewrap"><table><thead><tr><th>Estado</th><th>Cedula</th><th>Nombre</th><th>Gerencia</th><th>Observacion</th></tr></thead><tbody>';
+  list.slice(0,1200).forEach(p=>{
+    const on=CUR.entregado[p.ced];
+    const btn=on?'<button class="act" style="background:var(--verdebg);color:var(--verde);border-color:var(--verde);" data-c="'+p.ced+'" onclick="toggleEnt(this.getAttribute(\'data-c\'))">&#10003; Entregado</button>':'<button class="act prim" data-c="'+p.ced+'" onclick="toggleEnt(this.getAttribute(\'data-c\'))">Entregar</button>';
+    const obs='<input class="obs" value="'+(CUR.obs[p.ced]||'').replace(/"/g,'&quot;')+'" placeholder="observacion..." data-c="'+p.ced+'" onchange="setObs(this.getAttribute(\'data-c\'),this.value)">';
+    html+='<tr><td>'+btn+'</td><td>'+p.ced+'</td><td>'+p.nom+'</td><td>'+p.ger+'</td><td>'+obs+'</td></tr>';
+  });
+  html+='</tbody></table></div>';
+  document.getElementById('ent-list').innerHTML=html;
+}
+function toggleEnt(ced){wEnt(ced,!CUR.entregado[ced]);}
+function setObs(ced,val){wObs(ced,val.trim());}
+
+// ---------- 3. CONCILIACION ----------
+function renderConcilia(){
+  const v=document.getElementById('view-concilia');
+  const authList=filtered().filter(p=>CUR.auth[p.ced]);
+  let conf=0,noc=0;const rows=[];
+  authList.forEach(p=>{if(CUR.entregado[p.ced]){conf++;rows.push([p,'conf']);}else{noc++;rows.push([p,'noc']);}});
+  const evs=(CUR.eventuales||[]).filter(e=>e.entregado);
+  const segTot=ORGANISMOS.reduce((a,o)=>a+(CUR.seguridad[o]||0),0);
+  let html='<div class="kpis">';
+  html+='<div class="kpi"><div class="l">Conforme</div><div class="v" style="color:var(--verde)">'+conf+'</div></div>';
+  html+='<div class="kpi"><div class="l">Autorizado, no comio</div><div class="v" style="color:var(--ambar)">'+noc+'</div></div>';
+  html+='<div class="kpi"><div class="l">Eventuales</div><div class="v" style="color:var(--azul)">'+evs.length+'</div></div>';
+  html+='<div class="kpi"><div class="l">Cuerpos seguridad</div><div class="v" style="color:var(--azul)">'+segTot+'</div></div>';
+  html+='<div class="kpi"><div class="l">Total a facturar</div><div class="v">'+(conf+evs.length+segTot)+'</div></div>';
+  html+='</div>';
+  html+='<div class="card"><h2>Conciliacion &mdash; '+MEAL+'</h2><div class="muted">Se factura lo conforme + eventuales + seguridad. Lo autorizado-no-comido queda en revision.</div>';
+  html+='<div class="tablewrap" style="margin-top:10px;"><table><thead><tr><th>Estado</th><th>Cedula</th><th>Nombre</th><th>Gerencia</th><th>Observacion</th></tr></thead><tbody>';
+  rows.slice(0,1500).forEach(([p,t])=>{const pill=t==='conf'?'<span class="pill p-conf">Conforme</span>':'<span class="pill p-noc">No comio</span>';html+='<tr><td>'+pill+'</td><td>'+p.ced+'</td><td>'+p.nom+'</td><td>'+p.ger+'</td><td class="muted">'+(CUR.obs[p.ced]||'')+'</td></tr>';});
+  evs.forEach(e=>{html+='<tr><td><span class="pill p-ev">Eventual</span></td><td>&mdash;</td><td>'+e.nom+'</td><td>'+(e.emp||'Eventual')+'</td><td class="muted">'+(e.obs||'')+'</td></tr>';});
+  ORGANISMOS.forEach(o=>{const q=CUR.seguridad[o]||0;if(q>0)html+='<tr><td><span class="pill p-ev">Seguridad</span></td><td>&mdash;</td><td>'+o+'</td><td>Cuerpo de seguridad</td><td class="muted">cupo: '+q+'</td></tr>';});
+  html+='</tbody></table></div>';
+  html+='<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;"><button class="act prim" onclick="exportDiaXLSX()">Exportar resumen del dia (Excel)</button></div></div>';
+  v.innerHTML=html;
+}
+
+// ---------- EVENTUALES ----------
+function renderEventuales(){
+  const v=document.getElementById('view-eventuales');
+  let html='<div class="card"><h2>Eventuales (visitas / contratistas) &mdash; '+MEAL+'</h2>';
+  html+='<div class="muted">Solo RRHH. Quedan como entregados y se suman a facturacion aparte del personal fijo.</div>';
+  html+='<div style="margin:12px 0;" class="evrow"><input type="text" id="ev-nom" placeholder="Nombre"><input type="text" id="ev-emp" placeholder="Empresa / evento"><button class="act prim" onclick="addEv()">Agregar</button></div>';
+  html+='<div class="tablewrap"><table><thead><tr><th>Nombre</th><th>Empresa/evento</th><th>Estado</th><th></th></tr></thead><tbody>';
+  (CUR.eventuales||[]).forEach((e,i)=>{html+='<tr><td>'+e.nom+'</td><td>'+(e.emp||'')+'</td><td><span class="pill p-ev">Entregado</span></td><td><button class="act" onclick="delEv('+i+')">Quitar</button></td></tr>';});
+  html+='</tbody></table></div></div>';
+  v.innerHTML=html;
+}
+function addEv(){const n=document.getElementById('ev-nom').value.trim();if(!n){alert('Ingresa el nombre');return;}const e=document.getElementById('ev-emp').value.trim();const arr=[...(CUR.eventuales||[])];arr.push({nom:n,emp:e,entregado:true,obs:''});wEvent(arr);}
+function delEv(i){const arr=[...(CUR.eventuales||[])];arr.splice(i,1);wEvent(arr);}
+
+// ---------- SEGURIDAD ----------
+function renderSeguridad(){
+  const v=document.getElementById('view-seguridad');
+  let html='<div class="card"><h2>Cuerpos de seguridad &mdash; '+MEAL+'</h2>';
+  html+='<div class="muted">Solo RRHH carga las cantidades. Se controlan por cupo diario y se suman a facturacion como poblacion aparte.</div>';
+  html+='<div class="tablewrap" style="margin-top:12px;"><table><thead><tr><th>Organismo</th><th>Cantidad de '+MEAL.toLowerCase()+'</th></tr></thead><tbody>';
+  ORGANISMOS.forEach((o,i)=>{const val=CUR.seguridad[o]||0;html+='<tr><td>'+o+'</td><td><input type="number" min="0" style="width:90px;" value="'+val+'" data-i="'+i+'" onchange="setSeg(this.getAttribute(\'data-i\'),this.value)"></td></tr>';});
+  html+='</tbody></table></div>';
+  let tot=ORGANISMOS.reduce((a,o)=>a+(CUR.seguridad[o]||0),0);
+  html+='<div class="note">Total cuerpos de seguridad para '+MEAL.toLowerCase()+': <b>'+tot+'</b></div></div>';
+  v.innerHTML=html;
+}
+function setSeg(idx,val){const o=ORGANISMOS[parseInt(idx)];const n=parseInt(val)||0;const s={...CUR.seguridad};if(n>0)s[o]=n;else delete s[o];wSeg(s);}
+
+// ---------- CIERRE MENSUAL ----------
+function mesActual(){return (document.getElementById('fecha').value||today).slice(0,7);}
+function despachadoDia(dayData){
+  // dayData: {auth,entregado,eventuales,seguridad} para una comida
+  let fijo=0;
+  if(dayData && dayData.auth && dayData.entregado){
+    Object.keys(dayData.entregado).forEach(ced=>{if(dayData.auth[ced])fijo++;});
+  }
+  const ev=(dayData&&dayData.eventuales?dayData.eventuales.filter(e=>e&&e.entregado).length:0);
+  const seg=(dayData&&dayData.seguridad?ORGANISMOS.reduce((a,o)=>a+(dayData.seguridad[o]||0),0):0);
+  return {fijo,ev,seg,total:fijo+ev+seg};
+}
+function renderCierre(){
+  const v=document.getElementById('view-cierre');
+  const mes=mesActual();
+  v.innerHTML='<div class="card"><h2>Cierre mensual de comidas despachadas</h2><div class="muted">Cargando datos del mes '+mes+'...</div></div>';
+  db.ref('dias').get().then(snap=>{
+    const all=snap.val()||{};
+    const byFecha={};
+    Object.keys(all).forEach(k=>{
+      const us=k.lastIndexOf('_');const fecha=k.slice(0,us);const m=k.slice(us+1);
+      if(!fecha.startsWith(mes))return;
+      byFecha[fecha]=byFecha[fecha]||{};
+      byFecha[fecha][m]=despachadoDia(all[k]);
+    });
+    const fechas=Object.keys(byFecha).sort();
+    let html='<div class="card"><h2>Cierre mensual de comidas despachadas</h2><div class="muted">Consolidado del mes '+mes+' para el pago a la contrata. Cantidades realmente entregadas.</div>';
+    if(fechas.length===0){html+='<div class="note">Aun no hay comidas despachadas registradas en '+mes+'. Cambia el mes con el selector de Fecha arriba.</div></div>';v.innerHTML=html;return;}
+    const tot={Desayuno:0,Almuerzo:0,Cena:0};
+    const filas=[];
+    fechas.forEach(f=>{
+      const d=byFecha[f];const D=(d.Desayuno||{}).total||0,A=(d.Almuerzo||{}).total||0,C=(d.Cena||{}).total||0;
+      tot.Desayuno+=D;tot.Almuerzo+=A;tot.Cena+=C;
+      filas.push([f,D,A,C,D+A+C]);
+    });
+    const gtot=tot.Desayuno+tot.Almuerzo+tot.Cena;
+    html+='<div class="kpis" style="margin-top:12px;">';
+    html+='<div class="kpi"><div class="l">Desayunos mes</div><div class="v">'+tot.Desayuno+'</div></div>';
+    html+='<div class="kpi"><div class="l">Almuerzos mes</div><div class="v">'+tot.Almuerzo+'</div></div>';
+    html+='<div class="kpi"><div class="l">Cenas mes</div><div class="v">'+tot.Cena+'</div></div>';
+    html+='<div class="kpi" style="background:var(--azulbg);"><div class="l" style="color:var(--azul)">TOTAL GENERAL MES</div><div class="v" style="color:var(--azul)">'+gtot+'</div></div></div>';
+    if(ROLE==='RRHH')html+='<div style="margin:10px 0;"><button class="act prim" onclick=\'exportCierreXLSX('+JSON.stringify(JSON.stringify({mes,filas,tot,gtot}))+')\'>Exportar cierre mensual (Excel)</button> <button class="act" onclick="guardarCierre()">Guardar cierre en historico</button></div>';
+    html+='</div>';
+    html+='<div class="card"><h2>Desglose dia por dia &mdash; '+mes+'</h2><div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Desayuno</th><th>Almuerzo</th><th>Cena</th><th>Total dia</th></tr></thead><tbody>';
+    filas.forEach(r=>{html+='<tr><td>'+r[0]+'</td><td>'+r[1]+'</td><td>'+r[2]+'</td><td>'+r[3]+'</td><td><b>'+r[4]+'</b></td></tr>';});
+    html+='<tr style="background:var(--azulbg);font-weight:bold;"><td>TOTAL MES</td><td>'+tot.Desayuno+'</td><td>'+tot.Almuerzo+'</td><td>'+tot.Cena+'</td><td>'+gtot+'</td></tr>';
+    html+='</tbody></table></div></div>';
+    // historico de cierres guardados
+    html+='<div class="card"><h2>Historico de cierres guardados</h2><div class="muted">Cierres consolidados de meses anteriores. Quedan permanentes en el sistema.</div><div id="hist" class="tablewrap" style="margin-top:8px;"><div class="muted" style="padding:10px;">cargando...</div></div></div>';
+    v.innerHTML=html;
+    renderHistorico();
+  });
+}
+function guardarCierre(){
+  const mes=mesActual();
+  db.ref('dias').get().then(snap=>{
+    const all=snap.val()||{};const tot={Desayuno:0,Almuerzo:0,Cena:0};let dias=new Set();
+    Object.keys(all).forEach(k=>{const us=k.lastIndexOf('_');const fecha=k.slice(0,us);const m=k.slice(us+1);if(!fecha.startsWith(mes))return;dias.add(fecha);tot[m]=(tot[m]||0)+despachadoDia(all[k]).total;});
+    if(dias.size===0){alert('No hay datos para cerrar en '+mes);return;}
+    const gtot=tot.Desayuno+tot.Almuerzo+tot.Cena;
+    db.ref('cierres/'+mes).set({mes,desayuno:tot.Desayuno,almuerzo:tot.Almuerzo,cena:tot.Cena,total:gtot,dias:dias.size,guardado:new Date().toISOString()})
+      .then(()=>{alert('Cierre de '+mes+' guardado en el historico.');renderHistorico();})
+      .catch(()=>alert('No se pudo guardar (revisa permisos / conexion).'));
+  });
+}
+function renderHistorico(){
+  const el=document.getElementById('hist');if(!el)return;
+  db.ref('cierres').get().then(snap=>{
+    const c=snap.val()||{};const meses=Object.keys(c).sort().reverse();
+    if(meses.length===0){el.innerHTML='<div class="muted" style="padding:10px;">Aun no hay cierres guardados.</div>';return;}
+    let html='<table><thead><tr><th>Mes</th><th>Desayunos</th><th>Almuerzos</th><th>Cenas</th><th>Total general</th><th>Dias</th></tr></thead><tbody>';
+    meses.forEach(m=>{const x=c[m];html+='<tr><td><b>'+m+'</b></td><td>'+x.desayuno+'</td><td>'+x.almuerzo+'</td><td>'+x.cena+'</td><td><b>'+x.total+'</b></td><td>'+x.dias+'</td></tr>';});
+    html+='</tbody></table>';
+    el.innerHTML=html;
+  });
+}
+
+// ---------- EXPORTS EXCEL ----------
+function exportDiaXLSX(){
+  if(typeof XLSX==='undefined'){alert('Libreria Excel no cargo (requiere internet).');return;}
+  const f=document.getElementById('fecha').value;
+  const det=[['Fecha','Comida','Estado','Cedula','Nombre','Gerencia','Grupo','Observacion']];
+  filtered().filter(p=>CUR.auth[p.ced]).forEach(p=>{det.push([f,MEAL,CUR.entregado[p.ced]?'Conforme':'No comio',p.ced,p.nom,p.ger,p.grupo,CUR.obs[p.ced]||'']);});
+  (CUR.eventuales||[]).filter(e=>e.entregado).forEach(e=>det.push([f,MEAL,'Eventual','',e.nom,e.emp||'Eventual','',e.obs||'']));
+  ORGANISMOS.forEach(o=>{const q=CUR.seguridad[o]||0;if(q>0)det.push([f,MEAL,'Seguridad','',o,'Cuerpo de seguridad','','cupo: '+q]);});
+  const wb=XLSX.utils.book_new();const ws=XLSX.utils.aoa_to_sheet(det);ws['!cols']=[{wch:11},{wch:10},{wch:11},{wch:12},{wch:34},{wch:26},{wch:16},{wch:24}];
+  XLSX.utils.book_append_sheet(wb,ws,'Detalle');XLSX.writeFile(wb,'Comidas_'+MEAL+'_'+f+'.xlsx');
+}
+function exportCierreXLSX(payloadStr){
+  if(typeof XLSX==='undefined'){alert('Libreria Excel no cargo (requiere internet).');return;}
+  const p=JSON.parse(payloadStr);
+  const head=['Fecha','Desayuno','Almuerzo','Cena','Total dia'];
+  const rows=[head,...p.filas,['TOTAL MES',p.tot.Desayuno,p.tot.Almuerzo,p.tot.Cena,p.gtot]];
+  const wb=XLSX.utils.book_new();const ws=XLSX.utils.aoa_to_sheet(rows);ws['!cols']=[{wch:14},{wch:11},{wch:11},{wch:11},{wch:11}];
+  XLSX.utils.book_append_sheet(wb,ws,'Cierre '+p.mes);XLSX.writeFile(wb,'Cierre_Mensual_'+p.mes+'.xlsx');
+}
+</script>
+</body>
+</html>
