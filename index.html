@@ -194,7 +194,7 @@ function bindDay(){
   curRef=db.ref('dias/'+k);
   setSync('cargando...');
   curRef.on('value',snap=>{
-    const v=snap.val()||{};
+    const v=snap.val()||{auth:{},entregado:{},obs:{},eventuales:[],seguridad:{},excluidos:{}};
     CUR={
       auth:v.auth||{}, entregado:v.entregado||{}, obs:v.obs||{},
       eventuales:v.eventuales||[], seguridad:v.seguridad||{}, excluidos:v.excluidos||{}
@@ -381,7 +381,7 @@ function renderCierre(){
   const mes=mesActual();
   v.innerHTML='<div class="card"><h2>Cierre mensual de comidas despachadas</h2><div class="muted">Cargando datos del mes '+mes+'...</div></div>';
   db.ref('dias').get().then(snap=>{
-    const all=snap.val()||{};
+    const all=snap.val()||{auth:{},entregado:{},obs:{},eventuales:[],seguridad:{},excluidos:{}};
     const byFecha={};
     Object.keys(all).forEach(k=>{
       const us=k.lastIndexOf('_');const fecha=k.slice(0,us);const m=k.slice(us+1);
@@ -420,7 +420,7 @@ function renderCierre(){
 function guardarCierre(){
   const mes=mesActual();
   db.ref('dias').get().then(snap=>{
-    const all=snap.val()||{};const tot={Desayuno:0,Almuerzo:0,Cena:0};let dias=new Set();
+    const all=snap.val()||{auth:{},entregado:{},obs:{},eventuales:[],seguridad:{},excluidos:{}};const tot={Desayuno:0,Almuerzo:0,Cena:0};let dias=new Set();
     Object.keys(all).forEach(k=>{const us=k.lastIndexOf('_');const fecha=k.slice(0,us);const m=k.slice(us+1);if(!fecha.startsWith(mes))return;dias.add(fecha);tot[m]=(tot[m]||0)+despachadoDia(all[k]).total;});
     if(dias.size===0){alert('No hay datos para cerrar en '+mes);return;}
     const gtot=tot.Desayuno+tot.Almuerzo+tot.Cena;
@@ -432,7 +432,7 @@ function guardarCierre(){
 function renderHistorico(){
   const el=document.getElementById('hist');if(!el)return;
   db.ref('cierres').get().then(snap=>{
-    const c=snap.val()||{};const meses=Object.keys(c).sort().reverse();
+    const c=snap.val()||{auth:{},entregado:{},obs:{},eventuales:[],seguridad:{},excluidos:{}};const meses=Object.keys(c).sort().reverse();
     if(meses.length===0){el.innerHTML='<div class="muted" style="padding:10px;">Aun no hay cierres guardados.</div>';return;}
     let html='<table><thead><tr><th>Mes</th><th>Desayunos</th><th>Almuerzos</th><th>Cenas</th><th>Total general</th><th>Dias</th></tr></thead><tbody>';
     meses.forEach(m=>{const x=c[m];html+='<tr><td><b>'+m+'</b></td><td>'+x.desayuno+'</td><td>'+x.almuerzo+'</td><td>'+x.cena+'</td><td><b>'+x.total+'</b></td><td>'+x.dias+'</td></tr>';});
