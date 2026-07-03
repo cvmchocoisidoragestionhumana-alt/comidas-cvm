@@ -102,6 +102,7 @@ h2{font-size:15px;margin-bottom:10px;}
     <button id="t-eventuales" onclick="tab('eventuales')">Eventuales</button>
     <button id="t-seguridad" onclick="tab('seguridad')">Cuerpos de seguridad</button>
     <button id="t-cierre" onclick="tab('cierre')">Cierre mensual</button>
+    <button id="t-personal" onclick="tab('personal')">Personal (ingresos/egresos)</button>
   </div>
 
   <div class="bar">
@@ -121,6 +122,7 @@ h2{font-size:15px;margin-bottom:10px;}
   <div id="view-eventuales" class="hidden"></div>
   <div id="view-seguridad" class="hidden"></div>
   <div id="view-cierre" class="hidden"></div>
+  <div id="view-personal" class="hidden"></div>
 </div>
 </div>
 
@@ -134,7 +136,31 @@ h2{font-size:15px;margin-bottom:10px;}
 const COL={ced:0,nom:1,ger:2,grupo:3,fam:4,planta:5,mask:6};
 const MEALBIT={Desayuno:1,Almuerzo:2,Cena:4};
 const ORGANISMOS=['Guardia Nacional','DGCIM','GPAMO','Escuela DGCIM'];
-const NOMINA=NOMINA_RAW.map(a=>({ced:a[0],nom:a[1],ger:a[2],grupo:a[3],fam:a[4],planta:a[5],mask:a[6]}));
+// NOMINA ahora se carga desde Firebase (nodo /nomina). Si Firebase esta vacio,
+// usa NOMINA_RAW del archivo como respaldo. cargarNomina() se llama al iniciar sesion.
+let NOMINA = NOMINA_RAW.map(a=>({ced:a[0],nom:a[1],ger:a[2],grupo:a[3],fam:a[4],planta:a[5],mask:a[6]}));
+
+function cargarNomina(){
+  return db.ref('nomina').get().then(snap=>{
+    if(snap.exists()){
+      const data=snap.val();
+      NOMINA=Object.keys(data).filter(ced=>data[ced].activo!==false).map(ced=>({
+        ced:ced,
+        nom:data[ced].nom,
+        ger:data[ced].grupo,          // el "grupo solicitante" ocupa el lugar de 'ger' (compatibilidad)
+        grupo:data[ced].rot,          // grupo rotativo
+        fam:data[ced].tipo||'',
+        planta:data[ced].planta,
+        mask:data[ced].mask
+      }));
+      console.log('Nomina cargada desde Firebase: '+NOMINA.length+' activos');
+    }else{
+      console.log('Firebase sin nomina; usando NOMINA_RAW del archivo ('+NOMINA.length+')');
+    }
+  }).catch(e=>{
+    console.warn('No se pudo cargar nomina de Firebase, se usa el archivo:', e.message);
+  });
+}
 
 let ROLE=null, MEAL='Almuerzo', TAB='auth';
 let CUR={auth:{},entregado:{},obs:{},eventuales:[],seguridad:{},excluidos:{}};  // estado del dia+comida actual (sincronizado con Firebase)
@@ -160,10 +186,13 @@ auth.onAuthStateChanged(user=>{
       document.getElementById('u-rol').textContent=ROLE;
       document.getElementById('login').classList.add('hidden');
       document.getElementById('app').classList.remove('hidden');
-      applyRole();
-      document.getElementById('fecha').value=today;
-      gerOptions();
-      bindDay();
+      // Cargar nomina desde Firebase ANTES de renderizar las listas
+      cargarNomina().then(()=>{
+        applyRole();
+        document.getElementById('fecha').value=today;
+        gerOptions();
+        bindDay();
+      });
     });
   }else{
     ROLE=null;
@@ -181,6 +210,7 @@ function applyRole(){
   document.getElementById('t-eventuales').disabled=c;
   document.getElementById('t-seguridad').disabled=c;
   document.getElementById('t-cierre').disabled=c;
+  document.getElementById('t-personal').disabled=c;   // solo RRHH gestiona personal
   if(c){tab('entrega');}else{tab('auth');}
 }
 
@@ -218,7 +248,7 @@ function onDateChange(){bindDay();}
 function setMeal(m){MEAL=m;document.querySelectorAll('.mealbtn').forEach(b=>b.classList.toggle('active',b.dataset.m===m));bindDay();}
 function tab(t){
   TAB=t;
-  ['auth','entrega','concilia','eventuales','seguridad','cierre'].forEach(x=>{
+  ['auth','entrega','concilia','eventuales','seguridad','cierre','personal'].forEach(x=>{
     document.getElementById('view-'+x).classList.toggle('hidden',x!==t);
     document.getElementById('t-'+x).classList.toggle('active',x===t);
   });
@@ -242,6 +272,7 @@ function render(){
   if(TAB==='eventuales')renderEventuales();
   if(TAB==='seguridad')renderSeguridad();
   if(TAB==='cierre')renderCierre();
+  if(TAB==='personal')renderPersonal();
 }
 
 // ---------- 1. AUTORIZAR ----------
@@ -418,6 +449,107 @@ function renderCierre(){
     renderHistorico();
   });
 }
+// ---------- PERSONAL: INGRESOS Y EGRESOS (solo RRHH) ----------
+let PERSONAL_FILTRO_GRUPO='';
+let PERSONAL_BUSQUEDA='';
+
+function renderPersonal(){
+  const v=document.getElementById('view-personal');
+  if(ROLE!=='RRHH'){v.innerHTML='<div class="card"><div class="note danger">Solo RRHH puede gestionar el personal.</div></div>';return;}
+  // lista de grupos existentes (de la NOMINA activa)
+  const grupos=[...new Set(NOMINA.map(p=>p.ger))].sort();
+  const totalCH=NOMINA.filter(p=>p.planta==='CHOCO').length;
+  const totalIS=NOMINA.filter(p=>p.planta==='ISIDORA').length;
+
+  let html='<div class="card"><h2>Gestion de Personal &mdash; Ingresos y Egresos</h2>';
+  html+='<div class="muted">Al ingresar o egresar un trabajador, el cambio se refleja de inmediato para todas las gerencias y coordinaciones solicitantes.</div>';
+  html+='<div class="kpis" style="margin-top:12px;">';
+  html+='<div class="kpi"><div class="l">Total activos</div><div class="v">'+NOMINA.length+'</div></div>';
+  html+='<div class="kpi"><div class="l">Planta Choco</div><div class="v">'+totalCH+'</div></div>';
+  html+='<div class="kpi"><div class="l">Mina Isidora</div><div class="v">'+totalIS+'</div></div>';
+  html+='</div></div>';
+
+  // --- Formulario de INGRESO ---
+  html+='<div class="card"><h2>Ingresar nuevo trabajador</h2>';
+  html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;max-width:640px;">';
+  html+='<div><label class="muted">Cedula</label><input id="ni-ced" placeholder="Solo numeros" style="width:100%;padding:8px;"></div>';
+  html+='<div><label class="muted">Nombre y Apellido</label><input id="ni-nom" placeholder="NOMBRE APELLIDO" style="width:100%;padding:8px;"></div>';
+  html+='<div><label class="muted">Grupo solicitante</label><select id="ni-grupo" style="width:100%;padding:8px;">'+grupos.map(g=>'<option>'+g+'</option>').join('')+'</select></div>';
+  html+='<div><label class="muted">Grupo rotativo</label><input id="ni-rot" placeholder="Ej: 4X4 A, 21X7, ADM" style="width:100%;padding:8px;"></div>';
+  html+='<div><label class="muted">Planta</label><select id="ni-planta" style="width:100%;padding:8px;"><option>CHOCO</option><option>ISIDORA</option></select></div>';
+  html+='<div><label class="muted">Comidas</label><select id="ni-mask" style="width:100%;padding:8px;"><option value="7">Desayuno + Almuerzo + Cena</option><option value="3">Desayuno + Almuerzo</option><option value="2">Solo Almuerzo</option></select></div>';
+  html+='</div>';
+  html+='<div style="margin-top:12px;"><button class="act prim" onclick="ingresarTrabajador()">Ingresar trabajador</button> <span id="ni-msg" class="muted"></span></div>';
+  html+='</div>';
+
+  // --- Buscador + tabla de personal ---
+  html+='<div class="card"><h2>Personal actual</h2>';
+  html+='<div class="bar" style="margin-bottom:10px;">';
+  html+='<label>Grupo</label><select id="pf-grupo" onchange="onPersonalFiltro()"><option value="">Todos</option>'+grupos.map(g=>'<option'+(g===PERSONAL_FILTRO_GRUPO?' selected':'')+'>'+g+'</option>').join('')+'</select>';
+  html+='<label>Buscar</label><input id="pf-busca" placeholder="cedula o nombre" value="'+PERSONAL_BUSQUEDA+'" oninput="onPersonalBusca()" style="padding:6px;">';
+  html+='</div>';
+  // filtrar
+  let lista=NOMINA.slice();
+  if(PERSONAL_FILTRO_GRUPO) lista=lista.filter(p=>p.ger===PERSONAL_FILTRO_GRUPO);
+  if(PERSONAL_BUSQUEDA){const q=PERSONAL_BUSQUEDA.toUpperCase();lista=lista.filter(p=>p.ced.includes(q)||p.nom.toUpperCase().includes(q));}
+  lista.sort((a,b)=>a.nom.localeCompare(b.nom));
+  html+='<div class="muted" style="margin-bottom:6px;">'+lista.length+' trabajadores</div>';
+  html+='<div class="tablewrap"><table><thead><tr><th>Cedula</th><th>Nombre</th><th>Grupo</th><th>Rotativo</th><th>Planta</th><th>Comidas</th><th>Egreso</th></tr></thead><tbody>';
+  lista.slice(0,1200).forEach(p=>{
+    const mtxt=p.mask===7?'D+A+C':(p.mask===3?'D+A':(p.mask===2?'A':'?'));
+    html+='<tr><td>'+p.ced+'</td><td>'+p.nom+'</td><td>'+p.ger+'</td><td>'+(p.grupo||'')+'</td><td>'+p.planta+'</td><td>'+mtxt+'</td>';
+    html+='<td><button class="act" style="background:#fbe5d6;color:#c00000;" onclick="egresarTrabajador(\''+p.ced+'\',\''+p.nom.replace(/'/g,"\\'")+'\')">Egresar</button></td></tr>';
+  });
+  html+='</tbody></table></div></div>';
+  v.innerHTML=html;
+}
+function onPersonalFiltro(){PERSONAL_FILTRO_GRUPO=document.getElementById('pf-grupo').value;renderPersonal();}
+function onPersonalBusca(){PERSONAL_BUSQUEDA=document.getElementById('pf-busca').value;const c=document.getElementById('pf-busca').selectionStart;renderPersonal();const el=document.getElementById('pf-busca');if(el){el.focus();el.setSelectionRange(c,c);}}
+
+function ingresarTrabajador(){
+  const ced=(document.getElementById('ni-ced').value||'').replace(/\D/g,'');
+  const nom=(document.getElementById('ni-nom').value||'').trim().toUpperCase();
+  const grupo=document.getElementById('ni-grupo').value;
+  const rot=(document.getElementById('ni-rot').value||'').trim().toUpperCase()||'ADM';
+  const planta=document.getElementById('ni-planta').value;
+  const mask=parseInt(document.getElementById('ni-mask').value,10);
+  const msg=document.getElementById('ni-msg');
+  if(!ced||ced.length<6){msg.innerHTML='<span style="color:#c00000;">Cedula invalida.</span>';return;}
+  if(!nom){msg.innerHTML='<span style="color:#c00000;">Falta el nombre.</span>';return;}
+  // verificar que no exista ya
+  db.ref('nomina/'+ced).get().then(snap=>{
+    if(snap.exists() && snap.val().activo!==false){
+      msg.innerHTML='<span style="color:#c00000;">Ya existe un trabajador activo con esa cedula: '+snap.val().nom+'</span>';
+      return;
+    }
+    const tipo=rot.split(' ')[0];
+    const reg={nom:nom,grupo:grupo,rot:rot,tipo:tipo,planta:planta,mask:mask,activo:true};
+    db.ref('nomina/'+ced).set(reg).then(()=>{
+      msg.innerHTML='<span style="color:#059669;">Ingresado: '+nom+' en '+grupo+'.</span>';
+      // limpiar campos
+      document.getElementById('ni-ced').value='';document.getElementById('ni-nom').value='';document.getElementById('ni-rot').value='';
+      cargarNomina().then(()=>{gerOptions();renderPersonal();});
+    }).catch(e=>{msg.innerHTML='<span style="color:#c00000;">Error: '+e.message+'</span>';});
+  });
+}
+
+function egresarTrabajador(ced,nom){
+  if(!confirm('Egresar a '+nom+' (cedula '+ced+')?\n\nDesaparecera de todas las listas de inmediato. Queda un respaldo interno por si hay reingreso o error.'))return;
+  // respaldo invisible: mover a egresados/ con fecha y quien
+  db.ref('nomina/'+ced).get().then(snap=>{
+    if(!snap.exists()){alert('No se encontro ese trabajador.');return;}
+    const data=snap.val();
+    data.egresado_por=(auth.currentUser&&auth.currentUser.email)||'RRHH';
+    data.egresado_fecha=new Date().toISOString();
+    // guardar respaldo y eliminar de nomina activa
+    db.ref('egresados/'+ced).set(data).then(()=>{
+      db.ref('nomina/'+ced).remove().then(()=>{
+        cargarNomina().then(()=>{gerOptions();renderPersonal();});
+      });
+    }).catch(e=>alert('Error al egresar: '+e.message));
+  });
+}
+
 function guardarCierre(){
   const mes=mesActual();
   db.ref('dias').get().then(snap=>{
