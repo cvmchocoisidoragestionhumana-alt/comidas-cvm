@@ -359,6 +359,8 @@ let SOL_FECHA=null;                                 // fecha de la solicitud (ma
 
 function fechaManana(){const d=new Date();d.setDate(d.getDate()+1);return d.toISOString().slice(0,10);}
 function fechaBonita(f){const p=f.split('-');return p[2]+'/'+p[1]+'/'+p[0];}
+// normaliza cedula: quita puntos, espacios, guiones y ceros a la izquierda, para comparar bien
+function normCed(c){return String(c==null?'':c).replace(/[.\s\-]/g,'').replace(/^0+/,'');}
 
 function renderSolicitante(){
   const v=document.getElementById('view-auth');
@@ -383,11 +385,47 @@ function renderSolicitante(){
   html+='</div>';
 
   html+='<div id="paso2" style="margin-top:16px;"></div>';
+  html+='<div id="mis-solicitudes" style="margin-top:20px;"></div>';
   html+='<div id="cancelaciones-sec" style="margin-top:20px;"></div>';
   v.innerHTML=html;
   if(!SOL_FECHA)SOL_FECHA=fechaManana();
   if(ESCANER_DATA){mostrarPreview();pintarPaso2();}
+  renderMisSolicitudes();
   renderCancelaciones();
+}
+
+// Resumen de lo que la gerencia ha pedido (para que el solicitante vea sus totales)
+function renderMisSolicitudes(){
+  const cont=document.getElementById('mis-solicitudes');
+  if(!cont)return;
+  cont.innerHTML='<div class="card"><h2>Mis solicitudes enviadas</h2><div class="muted">Cargando...</div></div>';
+  db.ref('solicitudes').get().then(snap=>{
+    const all=snap.val()||{};
+    const mias=[];
+    Object.keys(all).forEach(fecha=>{
+      Object.keys(all[fecha]).forEach(gk=>{
+        const s=all[fecha][gk];
+        if(s && s.gerencia===GRUPO){mias.push({fecha,s,gk});}
+      });
+    });
+    if(mias.length===0){cont.innerHTML='<div class="card"><h2>Mis solicitudes enviadas</h2><div class="note">A&uacute;n no has enviado solicitudes.</div></div>';return;}
+    mias.sort((a,b)=>a.fecha<b.fecha?1:-1);  // mas recientes primero
+    let html='<div class="card"><h2>Mis solicitudes enviadas</h2><div class="muted">Estas son las comidas que has pedido a RRHH, con su estado.</div>';
+    html+='<div class="tablewrap" style="margin-top:8px;"><table><thead><tr><th>Fecha</th><th>Tipo</th><th>Desayuno</th><th>Almuerzo</th><th>Cena</th><th>Estado</th></tr></thead><tbody>';
+    let tD=0,tA=0,tC=0;
+    mias.forEach(m=>{
+      const t=m.s.totales||{Desayuno:0,Almuerzo:0,Cena:0};
+      const tipo=m.s.tipoPlanilla==='ParadaMolino'?'Parada Molino':'Personal';
+      let est='<span class="pill p-ev">Pendiente</span>';
+      if(m.s.estado==='aprobada')est='<span class="pill p-conf">Aprobada</span>';
+      if(m.s.estado==='rechazada')est='<span class="pill" style="background:#fdecea;color:var(--rojo);">Rechazada</span>';
+      html+='<tr><td>'+m.fecha+'</td><td>'+tipo+'</td><td>'+t.Desayuno+'</td><td>'+t.Almuerzo+'</td><td>'+t.Cena+'</td><td>'+est+'</td></tr>';
+      tD+=t.Desayuno||0;tA+=t.Almuerzo||0;tC+=t.Cena||0;
+    });
+    html+='<tr style="background:var(--azulbg);font-weight:bold;"><td colspan="2">TOTAL PEDIDO</td><td>'+tD+'</td><td>'+tA+'</td><td>'+tC+'</td><td></td></tr>';
+    html+='</tbody></table></div></div>';
+    cont.innerHTML=html;
+  }).catch(e=>{cont.innerHTML='<div class="card"><div class="note danger">Error: '+e.message+'</div></div>';});
 }
 
 function onSolFecha(){
@@ -1354,49 +1392,91 @@ function eliminarManual(fecha,clave){
 }
 
 // ---------- 2. ENTREGA ----------
+let ENT_FECHA=null, ENT_DATA=[];
 function renderEntrega(){
   const v=document.getElementById('view-entrega');
-  const authList=filtered().filter(p=>CUR.auth[p.ced]);
-  if(authList.length===0){
-    v.innerHTML='<div class="card"><h2>Entrega &mdash; '+MEAL+'</h2><div class="note danger">No hay lista autorizada para '+MEAL+' en esta fecha/filtro. RRHH debe autorizar primero.</div></div>';
-    return;
-  }
-  const ent=authList.filter(p=>CUR.entregado[p.ced]).length;
-  let html='<div class="kpis"><div class="kpi"><div class="l">Autorizados</div><div class="v">'+authList.length+'</div></div><div class="kpi"><div class="l">Entregados</div><div class="v">'+ent+'</div></div><div class="kpi"><div class="l">Pendientes</div><div class="v">'+(authList.length-ent)+'</div></div></div>';
-  html+='<div class="card"><h2>Entrega &mdash; '+MEAL+'</h2><input type="text" id="buscaent" placeholder="Buscar cedula o nombre..." style="width:100%;margin-bottom:10px;" oninput="renderEntrega2()"><div id="ent-list"></div></div>';
-  v.innerHTML=html;
-  renderEntrega2();
+  if(!ENT_FECHA)ENT_FECHA=today;
+  v.innerHTML='<div class="card"><h2>Entrega de comidas</h2><div class="muted">Cargando '+ENT_FECHA+'...</div></div>';
+  // leer todas las solicitudes aprobadas de la fecha, para la comida seleccionada
+  db.ref('solicitudes/'+ENT_FECHA).get().then(snap=>{
+    const gers=snap.val()||{};
+    const personas=[];  // {ced,nom,ger,comida,estado,gerKey}
+    Object.keys(gers).forEach(gk=>{
+      const s=gers[gk];
+      if(!s||s.estado!=='aprobada')return;
+      if(!s.detalle)return;
+      // detalle tiene arrays por comida: Desayuno, Almuerzo, Cena (cedulas)
+      const lista=s.detalle[MEAL]||[];
+      const excl=s.excluidosAlmuerzo||{};
+      const exclC=s.excluidosCena||{};
+      lista.forEach(ced=>{
+        // saltar los excluidos de esa comida
+        if(MEAL==='Almuerzo' && excl[ced])return;
+        if(MEAL==='Cena' && exclC[ced])return;
+        const persona=NOMINA.find(p=>normCed(p.ced)===normCed(ced));
+        const ent=(s.entrega&&s.entrega[MEAL]&&s.entrega[MEAL][ced])?s.entrega[MEAL][ced]:null;
+        personas.push({ced:ced,nom:persona?persona.nom:'(no en nomina)',ger:s.gerencia||gk,gerKey:gk,estado:ent});
+      });
+    });
+    ENT_DATA=personas;
+    pintarEntrega();
+  }).catch(e=>{v.innerHTML='<div class="card"><div class="note danger">Error: '+e.message+'</div></div>';});
 }
-function renderEntrega2(){
+function pintarEntrega(){
+  const v=document.getElementById('view-entrega');
+  const total=ENT_DATA.length;
+  const entregados=ENT_DATA.filter(p=>p.estado==='entregado').length;
+  const noretiro=ENT_DATA.filter(p=>p.estado==='noretiro').length;
+  const pend=total-entregados-noretiro;
+  let html='<div class="card"><h2>Entrega de comidas &mdash; '+MEAL+'</h2>';
+  html+='<div class="muted">La contrata marca <b>Entregado</b> a quien retir&oacute; y firm&oacute; su comida, o <b>No retir&oacute;</b> a quien no la retir&oacute;. Lo que se paga es lo entregado (firmado).</div>';
+  html+='<div style="margin-top:10px;"><label>Fecha: </label><input type="date" id="ent-fecha" value="'+ENT_FECHA+'" onchange="onEntFecha()" style="padding:6px;"> <span class="muted">Comida seleccionada: <b>'+MEAL+'</b> (cambiala arriba)</span></div>';
+  html+='</div>';
+  html+='<div class="kpis"><div class="kpi"><div class="l">Aprobados</div><div class="v">'+total+'</div></div><div class="kpi"><div class="l">Entregados</div><div class="v" style="color:var(--verde);">'+entregados+'</div></div><div class="kpi"><div class="l">No retiro</div><div class="v" style="color:var(--rojo);">'+noretiro+'</div></div><div class="kpi"><div class="l">Pendientes</div><div class="v">'+pend+'</div></div></div>';
+  if(total===0){
+    html+='<div class="card"><div class="note">No hay solicitudes aprobadas para '+MEAL+' en '+ENT_FECHA+'. RRHH debe aprobar primero, o cambia la comida/fecha.</div></div>';
+    v.innerHTML=html;return;
+  }
+  html+='<div class="card"><input type="text" id="buscaent" placeholder="Buscar cedula o nombre..." style="width:100%;margin-bottom:10px;" oninput="pintarEntregaLista()"><div id="ent-list"></div></div>';
+  v.innerHTML=html;
+  pintarEntregaLista();
+}
+function pintarEntregaLista(){
   const q=(document.getElementById('buscaent')||{value:''}).value.toLowerCase().trim();
-  let list=filtered().filter(p=>CUR.auth[p.ced]);
-  if(q)list=list.filter(p=>p.ced.includes(q)||p.nom.toLowerCase().includes(q));
-  let html='<div class="tablewrap"><table><thead><tr><th>Estado</th><th>Cedula</th><th>Nombre</th><th>Gerencia</th><th>Observacion</th></tr></thead><tbody>';
-  list.slice(0,1200).forEach(p=>{
-    const on=CUR.entregado[p.ced];
-    let btn;
-    if(on){
-      // Ya entregado: la contrata NO puede desmarcar (queda fijo). RRHH si puede corregir.
-      if(ROLE==='CONTRATA'){
-        btn='<button class="act" style="background:var(--verdebg);color:var(--verde);border-color:var(--verde);cursor:default;" disabled>&#10003; Entregado</button>';
-      }else{
-        btn='<button class="act" style="background:var(--verdebg);color:var(--verde);border-color:var(--verde);" data-c="'+p.ced+'" onclick="toggleEnt(this.getAttribute(\'data-c\'))" title="RRHH puede corregir">&#10003; Entregado (corregir)</button>';
-      }
+  let list=ENT_DATA.slice();
+  if(q)list=list.filter(p=>String(p.ced).includes(q)||p.nom.toLowerCase().includes(q));
+  let html='<div class="tablewrap"><table><thead><tr><th>Accion</th><th>Cedula</th><th>Nombre</th><th>Gerencia</th></tr></thead><tbody>';
+  list.slice(0,1500).forEach(p=>{
+    let btns='';
+    if(p.estado==='entregado'){
+      if(ROLE==='CONTRATA')btns='<span class="pill p-conf">&#10003; Entregado</span>';
+      else btns='<span class="pill p-conf">&#10003; Entregado</span> <button class="act" style="padding:2px 6px;font-size:11px;" onclick="setEntrega(\''+p.gerKey+'\',\''+p.ced+'\',null)">Corregir</button>';
+    }else if(p.estado==='noretiro'){
+      if(ROLE==='CONTRATA')btns='<span class="pill" style="background:#fdecea;color:var(--rojo);">No retiro</span>';
+      else btns='<span class="pill" style="background:#fdecea;color:var(--rojo);">No retiro</span> <button class="act" style="padding:2px 6px;font-size:11px;" onclick="setEntrega(\''+p.gerKey+'\',\''+p.ced+'\',null)">Corregir</button>';
     }else{
-      btn='<button class="act prim" data-c="'+p.ced+'" onclick="toggleEnt(this.getAttribute(\'data-c\'))">Entregar</button>';
+      // pendiente: dos botones
+      btns='<button class="act prim" style="padding:3px 8px;font-size:12px;" onclick="setEntrega(\''+p.gerKey+'\',\''+p.ced+'\',\'entregado\')">Entregado</button> '+
+           '<button class="act" style="padding:3px 8px;font-size:12px;background:#fdecea;color:var(--rojo);border-color:var(--rojo);" onclick="setEntrega(\''+p.gerKey+'\',\''+p.ced+'\',\'noretiro\')">No retiro</button>';
     }
-    const obs='<input class="obs" value="'+(CUR.obs[p.ced]||'').replace(/"/g,'&quot;')+'" placeholder="observacion..." data-c="'+p.ced+'" onchange="setObs(this.getAttribute(\'data-c\'),this.value)">';
-    html+='<tr><td>'+btn+'</td><td>'+p.ced+'</td><td>'+p.nom+'</td><td>'+p.ger+'</td><td>'+obs+'</td></tr>';
+    html+='<tr><td>'+btns+'</td><td>'+p.ced+'</td><td>'+p.nom+'</td><td>'+p.ger+'</td></tr>';
   });
   html+='</tbody></table></div>';
   document.getElementById('ent-list').innerHTML=html;
 }
-function toggleEnt(ced){
-  // Blindaje: la contrata solo puede marcar (pasar a entregado), nunca desmarcar
-  if(ROLE==='CONTRATA' && CUR.entregado[ced]){return;}
-  wEnt(ced,!CUR.entregado[ced]);
+function onEntFecha(){const e=document.getElementById('ent-fecha');if(e)ENT_FECHA=e.value;renderEntrega();}
+function setEntrega(gerKey,ced,estado){
+  // Blindaje: la contrata no puede cambiar una marca ya puesta
+  const p=ENT_DATA.find(x=>x.gerKey===gerKey && normCed(x.ced)===normCed(ced));
+  if(ROLE==='CONTRATA' && p && p.estado){alert('Ya fue marcado. Solo RRHH puede corregir.');return;}
+  const ref=db.ref('solicitudes/'+ENT_FECHA+'/'+gerKey+'/entrega/'+MEAL+'/'+ced);
+  const op=estado?ref.set(estado):ref.remove();
+  op.then(()=>renderEntrega()).catch(e=>alert('Error: '+e.message));
 }
-function setObs(ced,val){wObs(ced,val.trim());}
+function renderEntrega2(){}  // obsoleta, mantenida por compatibilidad
+function toggleEnt(ced){}
+function setObs(ced,val){}
+
 
 // ---------- 3. CONCILIACION ----------
 function renderConcilia(){
