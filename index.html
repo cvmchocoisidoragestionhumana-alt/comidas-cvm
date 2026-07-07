@@ -71,7 +71,7 @@ h2{font-size:15px;margin-bottom:10px;}
 <div id="login">
   <div class="loginbox">
     <h1>Control de Comidas</h1>
-    <div class="sub">CVM PIM III Choco-Isidora &middot; CVG MINERVEN</div>
+    <div class="sub">CVM PIM III Choco-Isidora</div>
     <label>Correo</label>
     <input type="email" id="li-email" placeholder="usuario@cvm.com" autocomplete="username">
     <label>Contrase&ntilde;a</label>
@@ -83,7 +83,7 @@ h2{font-size:15px;margin-bottom:10px;}
 
 <div id="app" class="hidden">
 <div class="topbar">
-  <div><h1>Control de Entregas de Comidas</h1><div class="sub">CVM PIM III Choco-Isidora &middot; CVG MINERVEN</div></div>
+  <div><h1>Control de Entregas de Comidas</h1><div class="sub">CVM PIM III Choco-Isidora</div></div>
   <div class="userbox">
     <span id="u-email"></span>
     <span class="rolebadge" id="u-rol"></span>
@@ -97,15 +97,17 @@ h2{font-size:15px;margin-bottom:10px;}
 
   <div class="tabs">
     <button id="t-auth" class="active" onclick="tab('auth')">1 &middot; Autorizar lista</button>
+    <button id="t-solicitudes" onclick="tab('solicitudes')">Solicitudes</button>
+    <button id="t-cargadiaria" onclick="tab('cargadiaria')">Carga diaria</button>
+    <button id="t-resumendiario" onclick="tab('resumendiario')">Resumen diario</button>
+    <button id="t-manuales" onclick="tab('manuales')">Planillas manuales</button>
     <button id="t-entrega" onclick="tab('entrega')">2 &middot; Entrega</button>
     <button id="t-concilia" onclick="tab('concilia')">3 &middot; Conciliacion</button>
-    <button id="t-eventuales" onclick="tab('eventuales')">Eventuales</button>
-    <button id="t-seguridad" onclick="tab('seguridad')">Cuerpos de seguridad</button>
     <button id="t-cierre" onclick="tab('cierre')">Cierre mensual</button>
     <button id="t-personal" onclick="tab('personal')">Personal (ingresos/egresos)</button>
   </div>
 
-  <div class="bar">
+  <div class="bar" id="topbar-filtros">
     <label>Fecha</label><input type="date" id="fecha" onchange="onDateChange()">
     <label>Comida</label>
     <button class="mealbtn" data-m="Desayuno" onclick="setMeal('Desayuno')">Desayuno</button>
@@ -117,6 +119,10 @@ h2{font-size:15px;margin-bottom:10px;}
   </div>
 
   <div id="view-auth"></div>
+  <div id="view-solicitudes" class="hidden"></div>
+  <div id="view-cargadiaria" class="hidden"></div>
+  <div id="view-resumendiario" class="hidden"></div>
+  <div id="view-manuales" class="hidden"></div>
   <div id="view-entrega" class="hidden"></div>
   <div id="view-concilia" class="hidden"></div>
   <div id="view-eventuales" class="hidden"></div>
@@ -130,6 +136,8 @@ h2{font-size:15px;margin-bottom:10px;}
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="firebase-config.js"></script>
 <script src="nomina-data.js"></script>
 <script>
@@ -162,7 +170,7 @@ function cargarNomina(){
   });
 }
 
-let ROLE=null, MEAL='Almuerzo', TAB='auth';
+let ROLE=null, GRUPO='', MEAL='Almuerzo', TAB='auth';
 let CUR={auth:{},entregado:{},obs:{},eventuales:[],seguridad:{},excluidos:{}};  // estado del dia+comida actual (sincronizado con Firebase)
 let curRef=null;       // referencia firebase del dia+comida actual
 const today=new Date().toISOString().slice(0,10);
@@ -180,10 +188,12 @@ function doLogout(){auth.signOut();}
 
 auth.onAuthStateChanged(user=>{
   if(user){
-    db.ref('usuarios/'+user.uid+'/rol').get().then(snap=>{
-      ROLE=snap.exists()?snap.val():'CONTRATA';
+    db.ref('usuarios/'+user.uid).get().then(snap=>{
+      const info=snap.exists()?snap.val():{};
+      ROLE=info.rol||'CONTRATA';
+      GRUPO=info.grupo||'';   // gerencia del solicitante (vacio para RRHH/CONTRATA)
       document.getElementById('u-email').textContent=user.email;
-      document.getElementById('u-rol').textContent=ROLE;
+      document.getElementById('u-rol').textContent=ROLE+(GRUPO?(' \u00b7 '+GRUPO):'');
       document.getElementById('login').classList.add('hidden');
       document.getElementById('app').classList.remove('hidden');
       // Cargar nomina desde Firebase ANTES de renderizar las listas
@@ -202,16 +212,65 @@ auth.onAuthStateChanged(user=>{
   }
 });
 
+// Define que pestañas ve cada rol y a que pestaña entra por defecto.
+const TABS_POR_ROL={
+  RRHH:        ['auth','solicitudes','cargadiaria','resumendiario','manuales','entrega','concilia','cierre','personal'],
+  CONTRATA:    ['solicitudes','entrega','cierre'],   // la contrata tambien ve las solicitudes aprobadas
+  SOLICITANTE: ['auth']
+};
+const TAB_INICIAL={RRHH:'auth', CONTRATA:'entrega', SOLICITANTE:'auth'};
+
+function rolPuedeVer(t){
+  const permitidas=TABS_POR_ROL[ROLE]||TABS_POR_ROL.CONTRATA;
+  return permitidas.indexOf(t)!==-1;
+}
+
 function applyRole(){
-  const c=(ROLE==='CONTRATA');
-  document.getElementById('banner-rrhh').classList.toggle('hidden',c);
-  document.getElementById('banner-contrata').classList.toggle('hidden',!c);
-  document.getElementById('t-auth').disabled=c;
-  document.getElementById('t-eventuales').disabled=c;
-  document.getElementById('t-seguridad').disabled=c;
-  document.getElementById('t-cierre').disabled=c;
-  document.getElementById('t-personal').disabled=c;   // solo RRHH gestiona personal
-  if(c){tab('entrega');}else{tab('auth');}
+  const permitidas=TABS_POR_ROL[ROLE]||TABS_POR_ROL.CONTRATA;
+  // Mostrar/ocultar cada boton de pestaña segun el rol
+  ['auth','solicitudes','cargadiaria','resumendiario','manuales','entrega','concilia','cierre','personal'].forEach(t=>{
+    const btn=document.getElementById('t-'+t);
+    if(!btn)return;
+    const visible=permitidas.indexOf(t)!==-1;
+    btn.style.display=visible?'':'none';
+    btn.disabled=!visible;
+  });
+  // Renombrar la pestaña "Autorizar lista" para el solicitante (para el es "Solicitar comidas")
+  const tAuth=document.getElementById('t-auth');
+  if(tAuth){
+    if(ROLE==='SOLICITANTE')tAuth.innerHTML='Solicitar comidas de mi gerencia';
+    else tAuth.innerHTML='1 &middot; Autorizar lista';
+  }
+  // Banners
+  document.getElementById('banner-rrhh').classList.toggle('hidden', ROLE!=='RRHH');
+  const bc=document.getElementById('banner-contrata');
+  if(ROLE==='CONTRATA'){
+    bc.classList.remove('hidden');
+    bc.innerHTML='Modo Contrata &mdash; solo puedes marcar Entregado y dejar observacion. El Cierre mensual es de solo lectura.';
+  }else if(ROLE==='SOLICITANTE'){
+    bc.classList.remove('hidden');
+    bc.className='banner rrhh';
+    bc.innerHTML='Modo Solicitante &mdash; '+GRUPO+'. Solicita las comidas del personal de tu gerencia para el dia siguiente.';
+  }else{
+    bc.classList.add('hidden');
+  }
+  // Filtro de gerencia: el solicitante queda fijo en su gerencia y no puede cambiarlo
+  const selGer=document.getElementById('fger');
+  const selPlanta=document.getElementById('fplanta');
+  const barra=document.getElementById('topbar-filtros');
+  if(ROLE==='SOLICITANTE'){
+    if(selGer){selGer.value=GRUPO; selGer.disabled=true; selGer.style.display='none';}
+    if(selPlanta){selPlanta.style.display='none';}
+    if(barra){barra.style.display='none';}   // el solicitante no usa la barra de comida/fecha
+    // fecha automatica = manana (dia siguiente)
+    const man=new Date();man.setDate(man.getDate()+1);
+    const f=document.getElementById('fecha');if(f)f.value=man.toISOString().slice(0,10);
+  }else{
+    if(selGer){selGer.disabled=false; selGer.style.display='';}
+    if(selPlanta){selPlanta.style.display='';}
+    if(barra){barra.style.display='';}
+  }
+  tab(TAB_INICIAL[ROLE]||'entrega');
 }
 
 // ---------- SINCRONIZACION CON FIREBASE ----------
@@ -247,15 +306,21 @@ function wObs(ced,val){const r=db.ref('dias/'+dayKey()+'/obs/'+ced);val?r.set(va
 function onDateChange(){bindDay();}
 function setMeal(m){MEAL=m;document.querySelectorAll('.mealbtn').forEach(b=>b.classList.toggle('active',b.dataset.m===m));bindDay();}
 function tab(t){
+  // SEGURIDAD: si el rol no puede ver esta pestaña, se le manda a su pestaña inicial
+  if(ROLE && !rolPuedeVer(t)){t=TAB_INICIAL[ROLE]||'entrega';}
   TAB=t;
-  ['auth','entrega','concilia','eventuales','seguridad','cierre','personal'].forEach(x=>{
+  ['auth','solicitudes','cargadiaria','resumendiario','manuales','entrega','concilia','cierre','personal'].forEach(x=>{
     document.getElementById('view-'+x).classList.toggle('hidden',x!==t);
-    document.getElementById('t-'+x).classList.toggle('active',x===t);
+    const b=document.getElementById('t-'+x);if(b)b.classList.toggle('active',x===t);
   });
   render();
 }
 function elig(){return NOMINA.filter(p=>p.mask & MEALBIT[MEAL]);}
 function filtered(){
+  // SEGURIDAD: el solicitante SOLO ve el personal de su propia gerencia, pase lo que pase.
+  if(ROLE==='SOLICITANTE'){
+    return elig().filter(p=>p.ger===GRUPO);
+  }
   const fp=document.getElementById('fplanta').value, fg=document.getElementById('fger').value;
   return elig().filter(p=>(!fp||p.planta===fp)&&(!fg||p.ger===fg));
 }
@@ -267,6 +332,10 @@ function gerOptions(){
 function render(){
   if(!ROLE)return;
   if(TAB==='auth')renderAuth();
+  if(TAB==='solicitudes')renderSolicitudes();
+  if(TAB==='cargadiaria')renderCargaDiaria();
+  if(TAB==='resumendiario')renderResumenDiario();
+  if(TAB==='manuales')renderManuales();
   if(TAB==='entrega')renderEntrega();
   if(TAB==='concilia')renderConcilia();
   if(TAB==='eventuales')renderEventuales();
@@ -275,9 +344,442 @@ function render(){
   if(TAB==='personal')renderPersonal();
 }
 
-// ---------- 1. AUTORIZAR ----------
+// ---------- 1. AUTORIZAR (RRHH) / SOLICITAR-VALIDAR (SOLICITANTE) ----------
 function renderAuth(){
   if(!CUR||!CUR.excluidos||!CUR.auth){CUR=Object.assign({auth:{},entregado:{},obs:{},eventuales:[],seguridad:{},excluidos:{}},CUR||{});}
+  if(ROLE==='SOLICITANTE'){renderSolicitante();return;}
+  renderAuthRRHH();
+}
+
+// ===== VISTA DEL SOLICITANTE: 3 cuadros (Desayuno/Almuerzo/Cena) + escaner =====
+const COMIDAS=['Desayuno','Almuerzo','Cena'];
+let VAL={Desayuno:null,Almuerzo:null,Cena:null};   // resultado de validacion por comida
+let ESCANER_DATA=null;                              // imagen comprimida (dataURL) del escaner
+let SOL_FECHA=null;                                 // fecha de la solicitud (manana)
+
+function fechaManana(){const d=new Date();d.setDate(d.getDate()+1);return d.toISOString().slice(0,10);}
+function fechaBonita(f){const p=f.split('-');return p[2]+'/'+p[1]+'/'+p[0];}
+
+function renderSolicitante(){
+  const v=document.getElementById('view-auth');
+  let html='<div class="card"><h2>Solicitar comidas &mdash; '+GRUPO+'</h2>';
+  html+='<div class="muted">Puedes subir solicitudes para cualquier fecha (planificaci&oacute;n anticipada), en el horario de 7:00 am a 4:00 pm. Indica la fecha de la planilla que subes.</div>';
+
+  // PASO 0: fecha de la planilla
+  html+='<div style="margin-top:14px;padding:12px;border:1px solid var(--borde);border-radius:8px;">';
+  html+='<h3 style="margin:0 0 6px;color:var(--azul);">Fecha y tipo de planilla</h3>';
+  html+='<div class="muted" style="margin-bottom:6px;">\u00bfPara qu&eacute; d&iacute;a es esta planilla?</div>';
+  html+='<input type="date" id="sol-fecha" value="'+(SOL_FECHA||fechaManana())+'" min="'+today+'" onchange="onSolFecha()" style="padding:8px;">';
+  html+='<div style="margin-top:10px;"><label style="font-weight:bold;">Tipo de planilla:</label> ';
+  html+='<select id="sol-tipo" style="padding:6px;margin-left:6px;"><option value="Personal">Personal normal</option><option value="ParadaMolino">Parada de Molino SAG</option></select></div>';
+  html+='</div>';
+
+  // PASO 1: subir el escaner
+  html+='<div style="margin-top:14px;padding:12px;border:1px solid var(--borde);border-radius:8px;">';
+  html+='<h3 style="margin:0 0 6px;color:var(--azul);">Paso 1 &mdash; Sube el escaner de tu planilla</h3>';
+  html+='<div class="muted" style="margin-bottom:8px;">Sube la foto o PDF de la planilla firmada. El sistema verificar&aacute; que est&eacute; legible antes de continuar.</div>';
+  html+='<input type="file" id="file-escaner" accept="image/*,application/pdf" onchange="cargarEscaner(this)">';
+  html+='<div id="escaner-preview" style="margin-top:10px;"></div>';
+  html+='</div>';
+
+  html+='<div id="paso2" style="margin-top:16px;"></div>';
+  html+='<div id="cancelaciones-sec" style="margin-top:20px;"></div>';
+  v.innerHTML=html;
+  if(!SOL_FECHA)SOL_FECHA=fechaManana();
+  if(ESCANER_DATA){mostrarPreview();pintarPaso2();}
+  renderCancelaciones();
+}
+
+function onSolFecha(){
+  const e=document.getElementById('sol-fecha');
+  if(e&&e.value)SOL_FECHA=e.value;
+}
+
+// ===== CANCELACIONES: reportar quien asistio pero no va a comer (almuerzo/cena) =====
+function enVentanaCancelacion(){
+  const ahora=new Date();const h=ahora.getHours()+ahora.getMinutes()/60;
+  return h>=7 && h<=8.5;   // 7:00 am a 8:30 am
+}
+function renderCancelaciones(){
+  const cont=document.getElementById('cancelaciones-sec');
+  if(!cont)return;
+  const hoy=today;
+  const claveGer=GRUPO;
+  cont.innerHTML='<div class="card"><h2>Cancelar comidas de hoy</h2><div class="muted">Cargando...</div></div>';
+  db.ref('solicitudes/'+hoy+'/'+claveGer).get().then(snap=>{
+    const enVentana=enVentanaCancelacion();
+    let html='<div class="card"><h2>Cancelar comidas de hoy ('+hoy+')</h2>';
+    html+='<div class="muted">Si un trabajador que S&Iacute; asisti&oacute; hoy no va a almorzar o cenar, rep&oacute;rtalo aqu&iacute; para que RRHH lo excluya. Ventana: 7:00 am a 8:30 am.</div>';
+    if(!enVentana){
+      html+='<div class="note" style="border-color:var(--rojo);margin-top:10px;">Fuera del horario de cancelaci&oacute;n (7:00 am a 8:30 am). No se pueden reportar cancelaciones ahora.</div>';
+    }
+    if(!snap.exists()){
+      html+='<div class="note" style="margin-top:10px;">No hay una solicitud tuya cargada para hoy. Las cancelaciones aplican sobre la solicitud del d&iacute;a.</div>';
+    }else if(enVentana){
+      const s=snap.val();
+      const canc=s.cancelaciones||{};
+      html+='<div style="margin-top:12px;padding:10px;border:1px solid var(--borde);border-radius:8px;">';
+      html+='<div style="display:grid;grid-template-columns:2fr 1fr 2fr auto;gap:8px;align-items:end;">';
+      html+='<div><label style="font-size:12px;">C&eacute;dula del trabajador</label><input type="text" id="canc-ced" placeholder="C.I." style="width:100%;padding:6px;"></div>';
+      html+='<div><label style="font-size:12px;">Comida</label><select id="canc-comida" style="width:100%;padding:6px;"><option value="Almuerzo">Almuerzo</option><option value="Cena">Cena</option></select></div>';
+      html+='<div><label style="font-size:12px;">Observaci&oacute;n</label><input type="text" id="canc-obs" placeholder="Motivo (opcional)" style="width:100%;padding:6px;"></div>';
+      html+='<button class="act prim" onclick="reportarCancelacion()">Reportar</button>';
+      html+='</div></div>';
+      if(Object.keys(canc).length>0){
+        html+='<div class="tablewrap" style="margin-top:12px;"><table><thead><tr><th>C&eacute;dula</th><th>Nombre</th><th>Comida</th><th>Observaci&oacute;n</th><th>Estado</th></tr></thead><tbody>';
+        Object.keys(canc).forEach(k=>{
+          const c=canc[k];
+          const est=c.confirmada?'<span style="color:var(--verde);">Excluido por RRHH</span>':'<span style="color:#b8860b;">Pendiente RRHH</span>';
+          html+='<tr><td>'+c.ced+'</td><td>'+(c.nombre||'')+'</td><td>'+c.comida+'</td><td>'+(c.obs||'')+'</td><td>'+est+'</td></tr>';
+        });
+        html+='</tbody></table></div>';
+      }
+    }
+    html+='</div>';
+    cont.innerHTML=html;
+  }).catch(e=>{cont.innerHTML='<div class="card"><div class="note danger">Error: '+e.message+'</div></div>';});
+}
+function reportarCancelacion(){
+  const ced=(document.getElementById('canc-ced')||{}).value.trim();
+  const comida=(document.getElementById('canc-comida')||{}).value;
+  const obs=(document.getElementById('canc-obs')||{}).value.trim();
+  if(!ced){alert('Escribe la cedula');return;}
+  if(!enVentanaCancelacion()){alert('Fuera del horario de cancelacion (7:00 a 8:30 am).');return;}
+  const persona=NOMINA.find(p=>normCed(p.ced)===normCed(ced));
+  if(!persona){alert('La cedula '+ced+' no existe en la nomina.');return;}
+  if(persona.ger!==GRUPO){alert('La cedula '+ced+' es de '+persona.ger+', no de tu gerencia.');return;}
+  const hoy=today;const claveGer=GRUPO;
+  const key='c_'+normCed(ced)+'_'+comida;
+  const registro={ced:ced,nombre:persona.nom,comida:comida,obs:obs,
+    reportadoPor:(auth.currentUser?auth.currentUser.email:''),
+    reportado:new Date().toISOString(),confirmada:false};
+  db.ref('solicitudes/'+hoy+'/'+claveGer+'/cancelaciones/'+key).set(registro)
+    .then(()=>{alert('Cancelacion reportada. RRHH la confirmara para excluir.');renderCancelaciones();})
+    .catch(e=>alert('Error: '+e.message));
+}
+
+function pintarPaso2(){
+  const cont=document.getElementById('paso2');
+  if(!cont)return;
+  // si no hay escaner legible, no se muestra el paso 2
+  if(!ESCANER_DATA || !ESCANER_DATA.legible){
+    cont.innerHTML='<div class="note">Sube un escaner legible (Paso 1) para habilitar la carga de c&eacute;dulas.</div>';
+    return;
+  }
+  let html='<div style="padding:12px;border:1px solid var(--borde);border-radius:8px;">';
+  html+='<h3 style="margin:0 0 6px;color:var(--azul);">Paso 2 &mdash; Declara las cantidades de tu planilla</h3>';
+  html+='<div class="muted" style="margin-bottom:8px;">Escribe cu&aacute;ntos desayunos, almuerzos y cenas trae tu planilla. El sistema verificar&aacute; que coincidan con las c&eacute;dulas que pegues abajo.</div>';
+  html+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:14px;">';
+  COMIDAS.forEach(m=>{
+    const dv=(document.getElementById('dec-'+m)?document.getElementById('dec-'+m).value:'');
+    html+='<div><label style="font-weight:bold;">'+m+' declarados</label>'+
+          '<input type="number" min="0" id="dec-'+m+'" value="'+dv+'" style="width:100%;padding:8px;margin-top:4px;" placeholder="0"></div>';
+  });
+  html+='</div>';
+  html+='<h3 style="margin:14px 0 6px;color:var(--azul);">Paso 3 &mdash; Pega las c&eacute;dulas</h3>';
+  html+='<div class="muted" style="margin-bottom:8px;">Pega en cada columna las c&eacute;dulas del personal que pide esa comida, tal como aparecen en la planilla que subiste (una por l&iacute;nea).</div>';
+  html+='<div class="sol-cols" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">';
+  COMIDAS.forEach(m=>{
+    const val=(document.getElementById('ced-'+m)?document.getElementById('ced-'+m).value:'');
+    html+='<div><label style="font-weight:bold;color:var(--azul);">'+m+'</label>'+
+          '<textarea id="ced-'+m+'" rows="7" style="width:100%;font-family:monospace;font-size:12px;padding:6px;margin-top:4px;" placeholder="Cedulas de '+m.toLowerCase()+'...">'+val+'</textarea></div>';
+  });
+  html+='</div>';
+  html+='<div style="margin-top:10px;"><button class="act prim" onclick="validarTodas()">Validar planilla</button> <button class="act" onclick="limpiarTodas()">Limpiar c&eacute;dulas</button></div>';
+  html+='<div id="val-resultado" style="margin-top:14px;"></div>';
+  html+='</div>';
+  // SECCION EXTRA: contratas externas (solo Gestion Administrativa)
+  if(GRUPO==='GESTION ADMINISTRATIVA'){
+    html+='<div style="margin-top:14px;padding:12px;border:1px solid var(--borde);border-radius:8px;background:var(--azulbg);">';
+    html+='<h3 style="margin:0 0 6px;color:var(--azul);">Contratas externas</h3>';
+    html+='<div class="muted" style="margin-bottom:8px;">Administra tus contratas (agregar, cambiar nombre o eliminar) y carga las comidas del d&iacute;a. Estas no est&aacute;n en n&oacute;mina.</div>';
+    // administrar lista de nombres
+    html+='<div style="padding:8px;background:#fff;border-radius:6px;margin-bottom:10px;">';
+    html+='<b style="font-size:13px;">Mis contratas registradas</b>';
+    html+='<div id="contratas-nombres" style="margin-top:6px;"></div>';
+    html+='<div style="display:flex;gap:6px;margin-top:6px;"><input type="text" id="nueva-contrata" placeholder="Nombre de nueva contrata" style="flex:1;padding:6px;"><button class="act prim" onclick="agregarNombreContrata()">Agregar contrata</button></div>';
+    html+='</div>';
+    // cargar comidas del dia por contrata
+    html+='<div id="contratas-lista"></div>';
+    html+='</div>';
+  }
+  cont.innerHTML=html;
+  if(VAL.Desayuno||VAL.Almuerzo||VAL.Cena)pintarResultado();
+  if(GRUPO==='GESTION ADMINISTRATIVA'){cargarNombresContratas();pintarContratas();}
+}
+
+// ===== Contratas externas (Gestion Administrativa) =====
+let CONTRATAS=[];              // comidas del dia: [{nom, Desayuno, Almuerzo, Cena}]
+let CONTRATAS_NOMBRES=null;    // lista de nombres registrados
+
+function cargarNombresContratas(){
+  // intenta leer de Firebase; si no hay, arranca con las dos por defecto
+  db.ref('config/contratas').get().then(snap=>{
+    if(snap.exists()){CONTRATAS_NOMBRES=snap.val();}
+    else{CONTRATAS_NOMBRES=['Ferreobras','Serviplot'];}
+    pintarNombresContratas();
+    pintarContratas();
+  }).catch(()=>{
+    CONTRATAS_NOMBRES=['Ferreobras','Serviplot'];
+    pintarNombresContratas();
+    pintarContratas();
+  });
+}
+function guardarNombresContratas(){
+  db.ref('config/contratas').set(CONTRATAS_NOMBRES).catch(e=>console.log('No se guardo lista:',e.message));
+}
+function pintarNombresContratas(){
+  const cont=document.getElementById('contratas-nombres');
+  if(!cont)return;
+  const lista=CONTRATAS_NOMBRES||[];
+  if(lista.length===0){cont.innerHTML='<span class="muted">Sin contratas registradas.</span>';return;}
+  let html='';
+  lista.forEach((n,i)=>{
+    html+='<span style="display:inline-flex;align-items:center;gap:4px;background:#eef;border:1px solid #ccd;border-radius:14px;padding:3px 10px;margin:3px;">'+n+
+      ' <a href="#" onclick="editarNombreContrata('+i+');return false;" style="text-decoration:none;" title="Editar">\u270e</a>'+
+      ' <a href="#" onclick="eliminarNombreContrata('+i+');return false;" style="text-decoration:none;color:var(--rojo);" title="Eliminar">\u2715</a></span>';
+  });
+  cont.innerHTML=html;
+}
+function agregarNombreContrata(){
+  const inp=document.getElementById('nueva-contrata');
+  const n=(inp?inp.value:'').trim();
+  if(!n){alert('Escribe el nombre');return;}
+  CONTRATAS_NOMBRES=CONTRATAS_NOMBRES||[];
+  if(CONTRATAS_NOMBRES.includes(n)){alert('Esa contrata ya existe');return;}
+  CONTRATAS_NOMBRES.push(n);
+  if(inp)inp.value='';
+  guardarNombresContratas();pintarNombresContratas();pintarContratas();
+}
+function editarNombreContrata(i){
+  const actual=CONTRATAS_NOMBRES[i];
+  const nuevo=prompt('Nuevo nombre para "'+actual+'":',actual);
+  if(nuevo===null)return;
+  const nn=nuevo.trim();if(!nn)return;
+  CONTRATAS_NOMBRES[i]=nn;
+  guardarNombresContratas();pintarNombresContratas();pintarContratas();
+}
+function eliminarNombreContrata(i){
+  if(!confirm('Eliminar la contrata "'+CONTRATAS_NOMBRES[i]+'"?'))return;
+  CONTRATAS_NOMBRES.splice(i,1);
+  guardarNombresContratas();pintarNombresContratas();pintarContratas();
+}
+
+function pintarContratas(){
+  const cont=document.getElementById('contratas-lista');
+  if(!cont)return;
+  const nombres=CONTRATAS_NOMBRES||[];
+  let html='<b style="font-size:13px;">Comidas del d&iacute;a por contrata</b>';
+  html+='<div class="tablewrap" style="margin-top:6px;"><table><thead><tr><th>Contrata</th><th>Desayuno</th><th>Almuerzo</th><th>Cena</th></tr></thead><tbody>';
+  nombres.forEach((n,i)=>{
+    const ex=CONTRATAS.find(c=>c.nom===n)||{Desayuno:0,Almuerzo:0,Cena:0};
+    html+='<tr><td>'+n+'</td>'+
+      '<td><input type="number" min="0" value="'+ex.Desayuno+'" style="width:70px;" onchange="setContrata(\''+n.replace(/'/g,"")+'\',\'Desayuno\',this.value)"></td>'+
+      '<td><input type="number" min="0" value="'+ex.Almuerzo+'" style="width:70px;" onchange="setContrata(\''+n.replace(/'/g,"")+'\',\'Almuerzo\',this.value)"></td>'+
+      '<td><input type="number" min="0" value="'+ex.Cena+'" style="width:70px;" onchange="setContrata(\''+n.replace(/'/g,"")+'\',\'Cena\',this.value)"></td></tr>';
+  });
+  html+='</tbody></table></div>';
+  cont.innerHTML=html;
+}
+function setContrata(nom,comida,val){
+  let c=CONTRATAS.find(x=>x.nom===nom);
+  if(!c){c={nom,Desayuno:0,Almuerzo:0,Cena:0};CONTRATAS.push(c);}
+  c[comida]=parseInt(val)||0;
+}
+
+function validarUnaComida(m){
+  const txt=(document.getElementById('ced-'+m)||{value:''}).value;
+  const lineas=txt.split(/[\n,;]+/).map(s=>s.replace(/[^0-9]/g,'').trim()).filter(s=>s.length>0);
+  const vistas=new Set();const ced=[];
+  lineas.forEach(c=>{if(!vistas.has(c)){vistas.add(c);ced.push(c);}});
+  const idx={};NOMINA.forEach(p=>{idx[p.ced]=p;});
+  const ok=[],errC=[],errG=[];
+  ced.forEach(c=>{
+    const p=idx[c];
+    if(!p)errC.push(c);
+    else if(p.ger!==GRUPO)errG.push({ced:c,nom:p.nom,ger:p.ger});
+    else ok.push({ced:c,nom:p.nom,grupo:p.grupo});
+  });
+  return {ok,errC,errG,total:ced.length};
+}
+
+function validarTodas(){
+  COMIDAS.forEach(m=>{VAL[m]=validarUnaComida(m);});
+  pintarResultado();
+}
+function limpiarTodas(){VAL={Desayuno:null,Almuerzo:null,Cena:null};COMIDAS.forEach(m=>{const t=document.getElementById('ced-'+m);if(t)t.value='';});pintarResultado();}
+
+function pintarResultado(){
+  const cont=document.getElementById('val-resultado');
+  if(!cont)return;
+  const algo=VAL.Desayuno||VAL.Almuerzo||VAL.Cena;
+  if(!algo){cont.innerHTML='';return;}
+  let totErr=0,totOk=0;
+  COMIDAS.forEach(m=>{if(VAL[m]){totErr+=VAL[m].errC.length+VAL[m].errG.length;totOk+=VAL[m].ok.length;}});
+  let html='';
+  html+='<div class="kpis">';
+  COMIDAS.forEach(m=>{const r=VAL[m]||{ok:[],errC:[],errG:[]};html+='<div class="kpi"><div class="l">'+m+'</div><div class="v" style="color:var(--verde)">'+r.ok.length+'</div>'+((r.errC.length+r.errG.length)>0?'<div style="color:var(--rojo);font-size:12px;">'+(r.errC.length+r.errG.length)+' con error</div>':'')+'</div>';});
+  html+='<div class="kpi" style="background:var(--azulbg);"><div class="l" style="color:var(--azul)">Total comidas</div><div class="v" style="color:var(--azul)">'+totOk+'</div></div>';
+  html+='</div>';
+  if(totErr>0){
+    html+='<div class="note danger" style="margin-top:12px;"><b>PLANILLA MALA &mdash; corrige antes de subir el escaner:</b>';
+    COMIDAS.forEach(m=>{
+      const r=VAL[m];if(!r)return;
+      if(r.errC.length+r.errG.length===0)return;
+      html+='<div style="margin-top:6px;"><u>'+m+':</u><ul style="margin:4px 0 0 18px;">';
+      r.errC.forEach(c=>{html+='<li>Cedula <b>'+c+'</b>: no existe (cedula mala).</li>';});
+      r.errG.forEach(e=>{html+='<li>Cedula <b>'+e.ced+'</b> ('+e.nom+'): es de <b>'+e.ger+'</b>, no de '+GRUPO+'. Eventuales/visitas los carga RRHH.</li>';});
+      html+='</ul></div>';
+    });
+    html+='</div>';
+  }
+  COMIDAS.forEach(m=>{
+    const r=VAL[m];if(!r||r.ok.length===0)return;
+    html+='<div style="margin-top:14px;"><h3 style="margin-bottom:6px;color:var(--azul);">'+m+' &mdash; '+r.ok.length+' trabajadores</h3>';
+    html+='<div class="tablewrap"><table><thead><tr><th>Cedula</th><th>Nombre</th><th>Grupo</th></tr></thead><tbody>';
+    r.ok.forEach(p=>{html+='<tr><td>'+p.ced+'</td><td>'+p.nom+'</td><td>'+p.grupo+'</td></tr>';});
+    html+='</tbody></table></div></div>';
+  });
+  // Zona de envio final: compara declarado vs pegado
+  html+='<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--borde);">';
+  // leer lo declarado
+  const dec={};let hayDec=false;
+  COMIDAS.forEach(m=>{const e=document.getElementById('dec-'+m);dec[m]=e?(parseInt(e.value)||0):0;if(dec[m]>0)hayDec=true;});
+  // comparar declarado vs pegado (validos)
+  const descuadre=[];
+  COMIDAS.forEach(m=>{
+    const pegado=(VAL[m]?VAL[m].ok.length:0);
+    if(dec[m]!==pegado)descuadre.push({m,dec:dec[m],pegado});
+  });
+  if(totErr>0){
+    html+='<div class="note danger">Corrige la planilla (c&eacute;dulas malas o personal de otra gerencia). Ajusta tu planilla y vuelve a pegar las c&eacute;dulas correctas.</div>';
+  }else if(totOk===0){
+    html+='<div class="note">Pega al menos un trabajador v&aacute;lido para poder enviar.</div>';
+  }else if(!hayDec){
+    html+='<div class="note danger">Declara las cantidades (Paso 2) antes de enviar.</div>';
+  }else if(descuadre.length>0){
+    html+='<div class="note danger"><b>Lo declarado no coincide con las c&eacute;dulas pegadas:</b><ul style="margin:8px 0 0 18px;">';
+    descuadre.forEach(d=>{html+='<li>'+d.m+': declaraste <b>'+d.dec+'</b> pero pegaste <b>'+d.pegado+'</b> c&eacute;dulas v&aacute;lidas. Revisa.</li>';});
+    html+='</ul></div>';
+  }else if(!ESCANER_DATA || !ESCANER_DATA.legible){
+    html+='<div class="note danger">Falta el escaner legible (Paso 1).</div>';
+  }else{
+    html+='<div class="note" style="border-color:var(--verde);margin-bottom:10px;"><b style="color:var(--verde);">Todo cuadra.</b> Escaner legible + declarado = pegado ('+totOk+' comidas). Al enviar, RRHH la revisar&aacute; contra la foto y la aprobar&aacute;.</div>';
+    html+='<button class="act prim" onclick="enviarSolicitud()">Verificar y enviar solicitud ('+totOk+' comidas)</button>';
+  }
+  html+='</div>';
+  cont.innerHTML=html;
+}
+
+function cargarEscaner(input){
+  const file=input.files[0];
+  if(!file)return;
+  const prev=document.getElementById('escaner-preview');
+  prev.innerHTML='<span class="muted">Procesando imagen...</span>';
+  if(file.type==='application/pdf'){
+    const r=new FileReader();
+    r.onload=()=>{ESCANER_DATA={tipo:'pdf',data:r.result,nombre:file.name,legible:true};mostrarPreview();pintarPaso2();};
+    r.readAsDataURL(file);
+    return;
+  }
+  const r=new FileReader();
+  r.onload=()=>{
+    const img=new Image();
+    img.onload=()=>{
+      // VERIFICAR LEGIBILIDAD: la imagen debe tener resolucion minima
+      const anchoMin=800, altoMin=600;
+      const legible=(img.width>=anchoMin && img.height>=altoMin);
+      const maxW=1000;
+      const escala=Math.min(1,maxW/img.width);
+      const cw=Math.round(img.width*escala), ch=Math.round(img.height*escala);
+      const canvas=document.createElement('canvas');canvas.width=cw;canvas.height=ch;
+      const ctx=canvas.getContext('2d');ctx.drawImage(img,0,0,cw,ch);
+      const comp=canvas.toDataURL('image/jpeg',0.6);
+      ESCANER_DATA={tipo:'img',data:comp,nombre:file.name,legible:legible,anchoOrig:img.width,altoOrig:img.height};
+      mostrarPreview();
+      pintarPaso2();
+    };
+    img.onerror=()=>{ESCANER_DATA=null;prev.innerHTML='<div class="note danger">No se pudo leer la imagen. Sube otra.</div>';};
+    img.src=r.result;
+  };
+  r.readAsDataURL(file);
+}
+function mostrarPreview(){
+  const prev=document.getElementById('escaner-preview');
+  if(!prev||!ESCANER_DATA)return;
+  const kb=Math.round((ESCANER_DATA.data.length*0.75)/1024);
+  if(ESCANER_DATA.tipo==='img'){
+    if(!ESCANER_DATA.legible){
+      // ESCANER MALO: alerta y no deja continuar
+      prev.innerHTML='<div class="note danger"><b>Escaner no legible.</b> La imagen es muy peque&ntilde;a o de baja resoluci&oacute;n ('+ESCANER_DATA.anchoOrig+'x'+ESCANER_DATA.altoOrig+' px). Vuelve a escanear la planilla con mejor calidad y s&uacute;bela de nuevo.</div>';
+    }else{
+      prev.innerHTML='<div class="note" style="border-color:var(--verde);"><b style="color:var(--verde);">Escaner legible.</b> Puedes continuar al Paso 2.</div>'+
+        '<img src="'+ESCANER_DATA.data+'" style="max-width:280px;border:1px solid var(--borde);border-radius:6px;margin-top:8px;"><div class="muted" style="margin-top:4px;">'+ESCANER_DATA.nombre+' &mdash; '+ESCANER_DATA.anchoOrig+'x'+ESCANER_DATA.altoOrig+' px, ~'+kb+' KB</div>';
+    }
+  }else{
+    prev.innerHTML='<div class="note" style="border-color:var(--verde);"><b style="color:var(--verde);">PDF cargado.</b> '+ESCANER_DATA.nombre+' (~'+kb+' KB). Puedes continuar al Paso 2.</div>';
+  }
+}
+
+function enviarSolicitud(){
+  if(!ESCANER_DATA){alert('Primero sube el escaner de la planilla.');return;}
+  // CONTROL DE HORARIO: subida permitida 7:00am - 4:00pm
+  const ahora=new Date();
+  const hora=ahora.getHours()+ahora.getMinutes()/60;
+  const enHorario=(hora>=7 && hora<16);   // 7am a 4pm
+  let justificacion=null, fueraDeHorario=false;
+  if(!enHorario){
+    fueraDeHorario=true;
+    const hh=ahora.getHours().toString().padStart(2,'0')+':'+ahora.getMinutes().toString().padStart(2,'0');
+    justificacion=prompt('Estas subiendo FUERA del horario permitido (7:00am - 4:00pm). Hora actual: '+hh+'.\n\nEscribe la justificacion del atraso (quedara registrada y la vera RRHH):');
+    if(justificacion===null){return;}   // cancelo
+    if(!justificacion.trim()){alert('Debes escribir una justificacion para subir fuera de horario.');return;}
+  }
+  const detalle={};let tot={Desayuno:0,Almuerzo:0,Cena:0};
+  COMIDAS.forEach(m=>{
+    const r=VAL[m];
+    detalle[m]=(r&&r.ok?r.ok.map(p=>p.ced):[]);
+    tot[m]=detalle[m].length;
+  });
+  const dec={};
+  COMIDAS.forEach(m=>{const e=document.getElementById('dec-'+m);dec[m]=e?(parseInt(e.value)||0):0;});
+  const tipoPlanilla=(document.getElementById('sol-tipo')?document.getElementById('sol-tipo').value:'Personal');
+  const registro={
+    gerencia:GRUPO,
+    fecha:SOL_FECHA,
+    tipoPlanilla:tipoPlanilla,
+    enviado:new Date().toISOString(),
+    porUsuario:(auth.currentUser?auth.currentUser.email:''),
+    verificadoPorSolicitante:true,
+    estado:'pendiente',
+    fueraDeHorario:fueraDeHorario,
+    justificacionAtraso:justificacion||null,
+    declarado:dec,
+    totales:tot,
+    detalle:detalle,
+    contratasExternas:(GRUPO==='GESTION ADMINISTRATIVA'?CONTRATAS.filter(c=>(c.Desayuno+c.Almuerzo+c.Cena)>0):null),
+    escaner:ESCANER_DATA
+  };
+  // clave: si es parada de molino, se guarda con sufijo para no pisar la solicitud normal
+  const claveGer=(tipoPlanilla==='ParadaMolino'?GRUPO+'__ParadaMolino':GRUPO);
+  const btn=(typeof event!=='undefined'&&event.target)?event.target:null;
+  if(btn){btn.disabled=true;btn.textContent='Enviando...';}
+  db.ref('solicitudes/'+SOL_FECHA+'/'+claveGer).set(registro)
+    .then(()=>{
+      let msg='TODO BIEN \u2014 SOLICITUD ENVIADA\n\nDia: '+fechaBonita(SOL_FECHA)+'\nGerencia: '+GRUPO+'\nDesayunos: '+tot.Desayuno+'  Almuerzos: '+tot.Almuerzo+'  Cenas: '+tot.Cena;
+      if(fueraDeHorario)msg+='\n\n\u26a0 Registrada como SUBIDA FUERA DE HORARIO con tu justificacion.';
+      msg+='\n\nQueda PENDIENTE de aprobacion por RRHH.\n\nRecuerda llevar la planilla fisica firmada a RRHH/contrata.';
+      alert(msg);
+      ESCANER_DATA=null;
+      CONTRATAS=[];
+      limpiarTodas();
+      renderSolicitante();
+    })
+    .catch(e=>{alert('No se pudo enviar: '+e.message);if(btn){btn.disabled=false;btn.textContent='Verificar y enviar solicitud';}});
+}
+
+// ===== VISTA DE RRHH: autorizar lista (como estaba) =====
+function renderAuthRRHH(){
   const list=filtered();
   const v=document.getElementById('view-auth');
   let html='<div class="card"><h2>Autorizar lista del dia &mdash; '+MEAL+'</h2>';
@@ -307,9 +809,548 @@ function updateAuthResumen(){
   const authN=Object.keys(CUR.auth).length, excN=Object.keys(CUR.excluidos).length;
   const ec=document.getElementById('auth-count');if(ec)ec.textContent='Autorizados: '+authN+'  |  Excluidos: '+excN;
   const by={};
-  elig().forEach(p=>{by[p.ger]=by[p.ger]||{e:0,a:0,x:0};by[p.ger].e++;if(CUR.auth[p.ced])by[p.ger].a++;if(CUR.excluidos[p.ced])by[p.ger].x++;});
+  // Usa filtered() (respeta el filtro del solicitante) en vez de elig() (toda la nomina)
+  filtered().forEach(p=>{by[p.ger]=by[p.ger]||{e:0,a:0,x:0};by[p.ger].e++;if(CUR.auth[p.ced])by[p.ger].a++;if(CUR.excluidos[p.ced])by[p.ger].x++;});
   const tb=document.getElementById('auth-resumen');
   if(tb)tb.innerHTML=Object.keys(by).sort().map(g=>'<tr><td>'+g+'</td><td>'+by[g].e+'</td><td><b>'+by[g].a+'</b></td><td class="danger">'+(by[g].x||'')+'</td></tr>').join('');
+}
+
+// ---------- SOLICITUDES (RRHH aprueba/rechaza, contrata ve aprobadas) ----------
+let SOLI_FECHA=null;
+function renderSolicitudes(){
+  const v=document.getElementById('view-solicitudes');
+  if(!SOLI_FECHA)SOLI_FECHA=today;
+  const esRRHH=(ROLE==='RRHH');
+  let html='<div class="card"><h2>Solicitudes de comida por gerencia</h2>';
+  html+='<div class="muted">'+(esRRHH
+    ?'Revisa las solicitudes que enviaron las gerencias, cotejando el listado contra el escaner. Aprueba o rechaza cada una.'
+    :'Solicitudes aprobadas por RRHH para preparar y entregar.')+'</div>';
+  html+='<div style="margin-top:10px;"><label>Fecha: </label><input type="date" id="soli-fecha" value="'+SOLI_FECHA+'" onchange="onSoliFecha()" style="padding:6px;"></div>';
+  if(esRRHH){
+    html+='<div style="margin-top:12px;padding:12px;background:var(--azulbg);border-radius:8px;">';
+    html+='<h3 style="margin:0 0 6px;color:var(--azul);">Cruce biom&eacute;trico del almuerzo (opcional)</h3>';
+    html+='<div class="muted" style="margin-bottom:8px;">Tienes de 7:00 a 11:00 am para subir el biom&eacute;trico. El sistema comparar&aacute; qui&eacute;n pidi&oacute; almuerzo contra qui&eacute;n marc&oacute;, y te mostrar&aacute; los que faltaron para que decidas a cu&aacute;les excluir. Si no subes nada, todos los que pidieron comen.</div>';
+    html+='<input type="file" id="file-bio" accept=".xlsx,.xls" onchange="cargarBiometrico(this)">';
+    html+='<div id="bio-resultado" style="margin-top:10px;"></div>';
+    html+='</div>';
+  }
+  html+='<div id="soli-lista" style="margin-top:14px;"><div class="muted">Cargando...</div></div>';
+  if(esRRHH){
+    html+='<div class="card" style="margin-top:12px;"><h2>Ranking de responsables (subidas fuera de horario)</h2><div class="muted">Gerencias que suben tarde con mas frecuencia en el mes '+mesActual()+'.</div><div id="ranking-resp" style="margin-top:8px;"><div class="muted">Cargando...</div></div></div>';
+  }
+  html+='</div>';
+  v.innerHTML=html;
+  cargarSolicitudes();
+  if(esRRHH)cargarRanking();
+}
+function onSoliFecha(){const e=document.getElementById('soli-fecha');if(e)SOLI_FECHA=e.value;cargarSolicitudes();}
+
+function cargarRanking(){
+  const cont=document.getElementById('ranking-resp');
+  if(!cont)return;
+  const mes=mesActual();
+  db.ref('solicitudes').get().then(snap=>{
+    const all=snap.val()||{};
+    const conteo={};   // gerencia -> {tarde, total}
+    Object.keys(all).forEach(fecha=>{
+      if(!fecha.startsWith(mes))return;
+      Object.keys(all[fecha]).forEach(ger=>{
+        const s=all[fecha][ger];if(!s)return;
+        const g=s.gerencia||ger;
+        conteo[g]=conteo[g]||{tarde:0,total:0};
+        conteo[g].total++;
+        if(s.fueraDeHorario)conteo[g].tarde++;
+      });
+    });
+    const filas=Object.keys(conteo).map(g=>[g,conteo[g].tarde,conteo[g].total]).filter(r=>r[1]>0).sort((a,b)=>b[1]-a[1]);
+    if(filas.length===0){cont.innerHTML='<div class="note" style="border-color:var(--verde);">Ninguna gerencia subio tarde este mes. Todos responsables.</div>';return;}
+    let html='<div class="tablewrap"><table><thead><tr><th>Gerencia</th><th>Subidas tarde</th><th>Total subidas</th><th>% tarde</th></tr></thead><tbody>';
+    filas.forEach(r=>{const pct=Math.round(r[1]/r[2]*100);html+='<tr><td>'+r[0]+'</td><td style="color:var(--rojo);font-weight:bold;">'+r[1]+'</td><td>'+r[2]+'</td><td>'+pct+'%</td></tr>';});
+    html+='</tbody></table></div>';
+    cont.innerHTML=html;
+  }).catch(e=>{cont.innerHTML='<div class="muted">No se pudo cargar el ranking.</div>';});
+}
+
+function cargarSolicitudes(){
+  const cont=document.getElementById('soli-lista');
+  if(!cont)return;
+  const esRRHH=(ROLE==='RRHH');
+  db.ref('solicitudes/'+SOLI_FECHA).get().then(snap=>{
+    if(!snap.exists()){cont.innerHTML='<div class="note">No hay solicitudes para esta fecha.</div>';return;}
+    const data=snap.val();
+    const gerencias=Object.keys(data).sort();
+    // resumen de totales aprobados
+    let apD=0,apA=0,apC=0,pend=0;
+    gerencias.forEach(g=>{const s=data[g];if(s.estado==='aprobada'){apD+=s.totales.Desayuno||0;apA+=s.totales.Almuerzo||0;apC+=s.totales.Cena||0;}if(s.estado==='pendiente')pend++;});
+    let html='<div class="kpis">';
+    html+='<div class="kpi"><div class="l">Gerencias</div><div class="v">'+gerencias.length+'</div></div>';
+    html+='<div class="kpi"><div class="l">Pendientes</div><div class="v" style="color:var(--ambar)">'+pend+'</div></div>';
+    html+='<div class="kpi"><div class="l">Desayunos aprob.</div><div class="v" style="color:var(--verde)">'+apD+'</div></div>';
+    html+='<div class="kpi"><div class="l">Almuerzos aprob.</div><div class="v" style="color:var(--verde)">'+apA+'</div></div>';
+    html+='<div class="kpi"><div class="l">Cenas aprob.</div><div class="v" style="color:var(--verde)">'+apC+'</div></div>';
+    html+='</div>';
+    gerencias.forEach(g=>{
+      const s=data[g];
+      // la contrata solo ve las aprobadas
+      if(!esRRHH && s.estado!=='aprobada')return;
+      const est=s.estado||'pendiente';
+      const pill=est==='aprobada'?'<span class="pill p-conf">Aprobada</span>':(est==='rechazada'?'<span class="pill p-noc">Rechazada</span>':'<span class="pill p-ev">Pendiente</span>');
+      html+='<div class="card" style="margin-top:12px;border:1px solid var(--borde);">';
+      html+='<div style="display:flex;justify-content:space-between;align-items:center;"><h3 style="margin:0;">'+g+' '+pill+'</h3>';
+      html+='<span class="muted">Declarado: D'+(s.declarado?s.declarado.Desayuno:0)+' A'+(s.declarado?s.declarado.Almuerzo:0)+' C'+(s.declarado?s.declarado.Cena:0)+' | Pegado: D'+s.totales.Desayuno+' A'+s.totales.Almuerzo+' C'+s.totales.Cena+'</span></div>';
+      if(s.porUsuario)html+='<div class="muted" style="font-size:12px;">Enviado por: '+s.porUsuario+'</div>';
+      if(s.fueraDeHorario)html+='<div class="note danger" style="margin-top:6px;padding:6px 10px;"><b>Subida fuera de horario.</b> Justificacion: '+(s.justificacionAtraso||'(sin especificar)')+'</div>';
+      // layout: listado a la izquierda, escaner a la derecha
+      html+='<div style="display:grid;grid-template-columns:1fr 300px;gap:14px;margin-top:10px;">';
+      // listado
+      html+='<div>';
+      const excl=(s.excluidosAlmuerzo||{});   // cedulas excluidas del almuerzo
+      COMIDAS.forEach(m=>{
+        const ceds=(s.detalle&&s.detalle[m])?s.detalle[m]:[];
+        if(ceds.length===0)return;
+        // para almuerzo, si hay biometrico, contar los que faltaron
+        let faltaron=0;
+        if(m==='Almuerzo'&&BIO_MARCARON){ceds.forEach(c=>{if(!BIO_MARCARON.has(c)&&!excl[c])faltaron++;});}
+        html+='<div style="margin-bottom:8px;"><b style="color:var(--azul);">'+m+' ('+ceds.length+')</b>';
+        if(m==='Almuerzo'&&BIO_MARCARON&&faltaron>0)html+=' <span class="pill p-noc">'+faltaron+' sin marcar</span>';
+        html+='<div class="tablewrap" style="max-height:180px;"><table><tbody>';
+        ceds.forEach(c=>{
+          const p=NOMINA.find(x=>x.ced===c);
+          const nom=(p?p.nom:'(no en nomina)');
+          // logica biometrico solo para almuerzo
+          if(m==='Almuerzo'&&BIO_MARCARON){
+            if(excl[c]){
+              html+='<tr style="opacity:.5;"><td>'+c+'</td><td>'+nom+' <span class="pill p-sin">Excluido</span></td><td><button class="act" style="padding:2px 6px;font-size:11px;" onclick="reincorporarAlmuerzo(\''+g+'\',\''+c+'\')">Reincorporar</button></td></tr>';
+            }else if(!BIO_MARCARON.has(c)){
+              html+='<tr style="background:#fff3f3;"><td>'+c+'</td><td>'+nom+' <span class="pill p-noc">No marc&oacute;</span></td><td><button class="act" style="padding:2px 6px;font-size:11px;background:var(--rojo);color:#fff;" onclick="excluirAlmuerzo(\''+g+'\',\''+c+'\')">Excluir</button></td></tr>';
+            }else{
+              html+='<tr><td>'+c+'</td><td>'+nom+' <span class="pill p-conf">Marc&oacute;</span></td><td></td></tr>';
+            }
+          }else{
+            html+='<tr><td>'+c+'</td><td>'+nom+'</td></tr>';
+          }
+        });
+        html+='</tbody></table></div></div>';
+      });
+      html+='</div>';
+      // escaner
+      html+='<div>';
+      if(s.escaner){
+        if(s.escaner.tipo==='img'){
+          html+='<img src="'+s.escaner.data+'" style="width:100%;border:1px solid var(--borde);border-radius:6px;cursor:pointer;" onclick="ampliarImg(this.src)">';
+        }else{
+          html+='<a href="'+s.escaner.data+'" target="_blank" class="act">Ver PDF del escaner</a>';
+        }
+        html+='<div class="muted" style="font-size:11px;margin-top:4px;">'+(s.escaner.nombre||'escaner')+'</div>';
+      }else{html+='<div class="muted">Sin escaner.</div>';}
+      html+='</div>';
+      html+='</div>';
+      // contratas externas (si las hay)
+      if(s.contratasExternas && s.contratasExternas.length>0){
+        html+='<div style="margin-top:10px;padding:8px;background:var(--azulbg);border-radius:6px;"><b style="color:var(--azul);">Contratas externas:</b><div class="tablewrap"><table><thead><tr><th>Contrata</th><th>Des</th><th>Alm</th><th>Cena</th></tr></thead><tbody>';
+        s.contratasExternas.forEach(c=>{html+='<tr><td>'+c.nom+'</td><td>'+c.Desayuno+'</td><td>'+c.Almuerzo+'</td><td>'+c.Cena+'</td></tr>';});
+        html+='</tbody></table></div></div>';
+      }
+      // cancelaciones reportadas por el solicitante (asistieron pero no comen)
+      if(s.cancelaciones && Object.keys(s.cancelaciones).length>0){
+        html+='<div style="margin-top:10px;padding:8px;background:#fff3f3;border:1px solid var(--rojo);border-radius:6px;"><b style="color:var(--rojo);">Cancelaciones reportadas (no van a comer):</b>';
+        html+='<div class="tablewrap"><table><thead><tr><th>C&eacute;dula</th><th>Nombre</th><th>Comida</th><th>Observaci&oacute;n</th><th>Estado</th>'+(esRRHH?'<th>Acci&oacute;n</th>':'')+'</tr></thead><tbody>';
+        Object.keys(s.cancelaciones).forEach(k=>{
+          const c=s.cancelaciones[k];
+          const est=c.confirmada?'<span class="pill p-conf">Excluido</span>':'<span class="pill p-ev">Pendiente</span>';
+          html+='<tr><td>'+c.ced+'</td><td>'+(c.nombre||'')+'</td><td>'+c.comida+'</td><td>'+(c.obs||'')+'</td><td>'+est+'</td>';
+          if(esRRHH){
+            if(c.confirmada)html+='<td><button class="act" style="padding:2px 6px;font-size:11px;" onclick="revertirCancelacion(\''+g+'\',\''+k+'\')">Revertir</button></td>';
+            else html+='<td><button class="act prim" style="padding:2px 6px;font-size:11px;" onclick="confirmarCancelacion(\''+g+'\',\''+k+'\',\''+c.ced+'\',\''+c.comida+'\')">Confirmar exclusi&oacute;n</button></td>';
+          }
+          html+='</tr>';
+        });
+        html+='</tbody></table></div></div>';
+      }
+      // acciones RRHH
+      if(esRRHH){
+        if(s.rechazoMotivo)html+='<div class="note danger" style="margin-top:8px;">Motivo de rechazo: '+s.rechazoMotivo+'</div>';
+        html+='<div style="margin-top:10px;display:flex;gap:8px;">';
+        if(est!=='aprobada')html+='<button class="act prim" onclick="aprobarSoli(\''+g+'\')">Aprobar</button>';
+        if(est!=='rechazada')html+='<button class="act" style="background:var(--rojo);color:#fff;" onclick="rechazarSoli(\''+g+'\')">Rechazar</button>';
+        html+='</div>';
+      }else{
+        if(s.rechazoMotivo)html+='<div class="note" style="margin-top:8px;">Nota: '+s.rechazoMotivo+'</div>';
+      }
+      html+='</div>';
+    });
+    cont.innerHTML=html;
+  }).catch(e=>{cont.innerHTML='<div class="note danger">Error al cargar: '+e.message+'</div>';});
+}
+
+// ===== CRUCE BIOMETRICO DEL ALMUERZO =====
+let BIO_MARCARON=null;   // Set de cedulas que marcaron
+
+function limpiaBio(v){if(v===null||v===undefined)return '';return String(v).replace(/\u00a0/g,'').trim();}
+
+function cargarBiometrico(input){
+  const file=input.files[0];
+  if(!file)return;
+  const cont=document.getElementById('bio-resultado');
+  cont.innerHTML='<span class="muted">Leyendo biometrico...</span>';
+  const reader=new FileReader();
+  reader.onload=(e)=>{
+    try{
+      const data=new Uint8Array(e.target.result);
+      const wb=XLSX.read(data,{type:'array'});
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      const filas=XLSX.utils.sheet_to_json(ws,{header:1});
+      // columna 0 = cedula. Recolectar cedulas que marcaron
+      const marcaron=new Set();
+      filas.forEach(f=>{
+        const ced=limpiaBio(f[0]).replace(/[^0-9]/g,'');
+        if(ced && ced.length>=6)marcaron.add(ced);
+      });
+      BIO_MARCARON=marcaron;
+      cont.innerHTML='<div class="note" style="border-color:var(--verde);"><b style="color:var(--verde);">Biometrico cargado.</b> '+marcaron.size+' personas marcaron. Abajo se muestran los que pidieron almuerzo pero NO marcaron.</div>';
+      cargarSolicitudes();   // recargar para aplicar el cruce
+    }catch(err){
+      cont.innerHTML='<div class="note danger">No se pudo leer el biometrico: '+err.message+'</div>';
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function ampliarImg(src){
+  const w=window.open('','_blank');
+  if(w)w.document.write('<html><head><title>Escaner</title></head><body style="margin:0;background:#222;text-align:center;"><img src="'+src+'" style="max-width:100%;"></body></html>');
+}
+
+function excluirAlmuerzo(g,ced){
+  db.ref('solicitudes/'+SOLI_FECHA+'/'+g+'/excluidosAlmuerzo/'+ced).set(true)
+    .then(()=>cargarSolicitudes())
+    .catch(e=>alert('No se pudo excluir: '+e.message));
+}
+function reincorporarAlmuerzo(g,ced){
+  db.ref('solicitudes/'+SOLI_FECHA+'/'+g+'/excluidosAlmuerzo/'+ced).remove()
+    .then(()=>cargarSolicitudes())
+    .catch(e=>alert('No se pudo reincorporar: '+e.message));
+}
+
+// Confirmar una cancelacion reportada por el solicitante -> excluye de esa comida
+function confirmarCancelacion(g,key,ced,comida){
+  const updates={};
+  updates['solicitudes/'+SOLI_FECHA+'/'+g+'/cancelaciones/'+key+'/confirmada']=true;
+  // si es almuerzo, tambien lo marca en excluidosAlmuerzo (para que cuadre con el biometrico)
+  if(comida==='Almuerzo')updates['solicitudes/'+SOLI_FECHA+'/'+g+'/excluidosAlmuerzo/'+ced]=true;
+  if(comida==='Cena')updates['solicitudes/'+SOLI_FECHA+'/'+g+'/excluidosCena/'+ced]=true;
+  db.ref().update(updates).then(()=>cargarSolicitudes()).catch(e=>alert('Error: '+e.message));
+}
+function revertirCancelacion(g,key){
+  db.ref('solicitudes/'+SOLI_FECHA+'/'+g+'/cancelaciones/'+key).get().then(snap=>{
+    const c=snap.val();if(!c)return;
+    const updates={};
+    updates['solicitudes/'+SOLI_FECHA+'/'+g+'/cancelaciones/'+key+'/confirmada']=false;
+    if(c.comida==='Almuerzo')updates['solicitudes/'+SOLI_FECHA+'/'+g+'/excluidosAlmuerzo/'+c.ced]=null;
+    if(c.comida==='Cena')updates['solicitudes/'+SOLI_FECHA+'/'+g+'/excluidosCena/'+c.ced]=null;
+    db.ref().update(updates).then(()=>cargarSolicitudes()).catch(e=>alert('Error: '+e.message));
+  });
+}
+
+function aprobarSoli(g){
+  db.ref('solicitudes/'+SOLI_FECHA+'/'+g).update({estado:'aprobada',rechazoMotivo:null,aprobadoPor:(auth.currentUser?auth.currentUser.email:''),aprobadoEn:new Date().toISOString()})
+    .then(()=>cargarSolicitudes())
+    .catch(e=>alert('No se pudo aprobar: '+e.message));
+}
+function rechazarSoli(g){
+  const motivo=prompt('Motivo del rechazo (lo vera el solicitante):');
+  if(motivo===null)return;
+  db.ref('solicitudes/'+SOLI_FECHA+'/'+g).update({estado:'rechazada',rechazoMotivo:motivo||'Sin especificar',rechazadoPor:(auth.currentUser?auth.currentUser.email:''),rechazadoEn:new Date().toISOString()})
+    .then(()=>cargarSolicitudes())
+    .catch(e=>alert('No se pudo rechazar: '+e.message));
+}
+
+// ---------- CARGA DIARIA (RRHH): eventuales, seguridad, merienda por dia ----------
+let CD_FECHA=null, CD_SEG={};
+function renderCargaDiaria(){
+  const v=document.getElementById('view-cargadiaria');
+  if(ROLE!=='RRHH'){v.innerHTML='<div class="card"><div class="note danger">Solo RRHH puede usar la carga diaria.</div></div>';return;}
+  if(!CD_FECHA)CD_FECHA=today;
+  v.innerHTML='<div class="card"><h2>Carga diaria &mdash; RRHH</h2><div class="muted">Cargando '+CD_FECHA+'...</div></div>';
+  db.ref('cargadiaria/'+CD_FECHA).get().then(snap=>{
+    const d=snap.val()||{eventuales:{Desayuno:0,Almuerzo:0,Cena:0},seguridad:{},merienda:0};
+    CD_SEG=Object.assign({},d.seguridad||{});
+    const ev=d.eventuales||{Desayuno:0,Almuerzo:0,Cena:0};
+    const mer=d.merienda||0;
+    let html='<div class="card"><h2>Carga diaria &mdash; RRHH</h2>';
+    html+='<div class="muted">Carga los eventuales, cuerpos de seguridad y merienda de cada dia. El cierre del mes suma todo automaticamente. Respeta el horario 7am-4pm.</div>';
+    html+='<div style="margin-top:10px;"><label>Fecha: </label><input type="date" id="cd-fecha" value="'+CD_FECHA+'" onchange="onCDFecha()" style="padding:6px;"></div>';
+    html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px;">';
+    // eventuales
+    html+='<div style="padding:10px;border:1px solid var(--borde);border-radius:8px;"><b>Eventuales / visitas</b><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:6px;">';
+    html+='<div><label style="font-size:11px;">Desayuno</label><input type="number" id="cd-ev-d" value="'+(ev.Desayuno||0)+'" style="width:100%;"></div>';
+    html+='<div><label style="font-size:11px;">Almuerzo</label><input type="number" id="cd-ev-a" value="'+(ev.Almuerzo||0)+'" style="width:100%;"></div>';
+    html+='<div><label style="font-size:11px;">Cena</label><input type="number" id="cd-ev-c" value="'+(ev.Cena||0)+'" style="width:100%;"></div></div></div>';
+    // merienda
+    html+='<div style="padding:10px;border:1px solid var(--borde);border-radius:8px;"><b>Merienda Nocturna</b><div style="margin-top:6px;"><label style="font-size:11px;">Cantidad del dia</label><input type="number" id="cd-merienda" value="'+mer+'" style="width:100%;"></div></div>';
+    // seguridad
+    html+='<div style="padding:10px;border:1px solid var(--borde);border-radius:8px;grid-column:1/3;"><b>Cuerpos de seguridad</b> <span class="muted" style="font-size:12px;">(DGCIM, GPAMO, GNB, Escuela DGCIM...)</span>';
+    html+='<div id="cd-seg-lista" style="margin-top:6px;"></div>';
+    html+='<div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:6px;margin-top:6px;align-items:end;">';
+    html+='<input type="text" id="cd-seg-nom" placeholder="Nombre (DGCIM...)"><input type="number" id="cd-seg-d" placeholder="Des" value="0"><input type="number" id="cd-seg-a" placeholder="Alm" value="0"><input type="number" id="cd-seg-c" placeholder="Cena" value="0"><button class="act prim" onclick="cdAgregarSeg()">Agregar</button></div></div>';
+    html+='</div>';
+    html+='<div style="margin-top:12px;"><button class="act prim" onclick="guardarCargaDiaria()">Guardar carga del '+CD_FECHA+'</button></div>';
+    html+='</div>';
+    v.innerHTML=html;
+    cdPintarSeg();
+  }).catch(e=>{v.innerHTML='<div class="card"><div class="note danger">Error: '+e.message+'</div></div>';});
+}
+function onCDFecha(){const e=document.getElementById('cd-fecha');if(e)CD_FECHA=e.value;renderCargaDiaria();}
+function cdPintarSeg(){
+  const cont=document.getElementById('cd-seg-lista');if(!cont)return;
+  if(Object.keys(CD_SEG).length===0){cont.innerHTML='<div class="muted">Sin cuerpos agregados este dia.</div>';return;}
+  let html='<div class="tablewrap"><table><thead><tr><th>Cuerpo</th><th>Des</th><th>Alm</th><th>Cena</th><th></th></tr></thead><tbody>';
+  Object.keys(CD_SEG).forEach(n=>{const c=CD_SEG[n];html+='<tr><td>'+n+'</td><td>'+c.Desayuno+'</td><td>'+c.Almuerzo+'</td><td>'+c.Cena+'</td><td><button class="act" style="padding:2px 6px;font-size:11px;" onclick="cdQuitarSeg(\''+n.replace(/'/g,"")+'\')">Quitar</button></td></tr>';});
+  html+='</tbody></table></div>';cont.innerHTML=html;
+}
+function cdAgregarSeg(){
+  const nom=(document.getElementById('cd-seg-nom')||{value:''}).value.trim();if(!nom){alert('Nombre del cuerpo');return;}
+  CD_SEG[nom]={Desayuno:parseInt((document.getElementById('cd-seg-d')||{}).value)||0,Almuerzo:parseInt((document.getElementById('cd-seg-a')||{}).value)||0,Cena:parseInt((document.getElementById('cd-seg-c')||{}).value)||0};
+  document.getElementById('cd-seg-nom').value='';document.getElementById('cd-seg-d').value='0';document.getElementById('cd-seg-a').value='0';document.getElementById('cd-seg-c').value='0';
+  cdPintarSeg();
+}
+function cdQuitarSeg(n){delete CD_SEG[n];cdPintarSeg();}
+function guardarCargaDiaria(){
+  // control de horario 7am-4pm
+  const ahora=new Date();const hora=ahora.getHours()+ahora.getMinutes()/60;
+  if(hora<7||hora>=16){
+    if(!confirm('Estas fuera del horario 7am-4pm. Deseas guardar de todas formas?'))return;
+  }
+  const d={
+    eventuales:{Desayuno:parseInt((document.getElementById('cd-ev-d')||{}).value)||0,Almuerzo:parseInt((document.getElementById('cd-ev-a')||{}).value)||0,Cena:parseInt((document.getElementById('cd-ev-c')||{}).value)||0},
+    merienda:parseInt((document.getElementById('cd-merienda')||{}).value)||0,
+    seguridad:CD_SEG,
+    porUsuario:(auth.currentUser?auth.currentUser.email:''),
+    guardado:new Date().toISOString()
+  };
+  db.ref('cargadiaria/'+CD_FECHA).set(d).then(()=>alert('Carga del '+CD_FECHA+' guardada.')).catch(e=>alert('Error: '+e.message));
+}
+
+// ---------- RESUMEN DIARIO (formato para el comedor) ----------
+let RD_FECHA=null;
+// Numero correlativo: 01/07/2026 = 185. Se calcula por dias transcurridos en el año.
+function numeroFormato(fecha){
+  const [a,m,d]=fecha.split('-').map(Number);
+  const base=new Date(2026,6,1);        // 01/07/2026
+  const actual=new Date(a,m-1,d);
+  if(a===2026){
+    const dias=Math.round((actual-base)/(1000*60*60*24));
+    return 185+dias;                     // 01/07=185
+  }
+  // años siguientes: reinicia en 1 el 1 de enero
+  const enero=new Date(a,0,1);
+  const dias=Math.round((actual-enero)/(1000*60*60*24));
+  return 1+dias;
+}
+
+function renderResumenDiario(){
+  const v=document.getElementById('view-resumendiario');
+  if(ROLE!=='RRHH'){v.innerHTML='<div class="card"><div class="note danger">Solo RRHH genera el resumen diario.</div></div>';return;}
+  if(!RD_FECHA)RD_FECHA=today;
+  v.innerHTML='<div class="card"><h2>Resumen diario para el comedor</h2><div class="muted">Consolidando '+RD_FECHA+'...</div></div>';
+  consolidarDia(RD_FECHA,(data)=>{
+    const num=numeroFormato(RD_FECHA);
+    let html='<div class="card"><h2>Formato Unico de Solicitud de Comidas (diario)</h2>';
+    html+='<div class="muted">Este es el formato que RRHH emite al comedor cada dia. N&uacute;mero automatico segun la fecha.</div>';
+    html+='<div style="margin-top:10px;"><label>Fecha: </label><input type="date" id="rd-fecha" value="'+RD_FECHA+'" onchange="onRDFecha()" style="padding:6px;"> <b style="margin-left:12px;">N&deg; '+num+'</b></div>';
+    // tabla estilo formato
+    html+='<div class="tablewrap" style="margin-top:12px;"><table><thead><tr><th>N&deg;</th><th>Servicio</th><th>Desayuno</th><th>Almuerzo</th><th>Cena</th><th>Merienda</th></tr></thead><tbody>';
+    let i=1;
+    // bloque 1: personal PIM (siempre), parada (si hay), contratas (si hay), eventual (si hay)
+    html+='<tr><td>'+(i++)+'</td><td>Personal PIM III Choco</td><td>'+data.personal.Desayuno+'</td><td>'+data.personal.Almuerzo+'</td><td>'+data.personal.Cena+'</td><td rowspan="20" style="vertical-align:top;font-weight:bold;">'+data.merienda+'</td></tr>';
+    if(data.parada.Desayuno+data.parada.Almuerzo+data.parada.Cena>0)html+='<tr><td>'+(i++)+'</td><td>Personal Parada de Molino SAG</td><td>'+data.parada.Desayuno+'</td><td>'+data.parada.Almuerzo+'</td><td>'+data.parada.Cena+'</td></tr>';
+    Object.keys(data.contratas).forEach(n=>{const c=data.contratas[n];html+='<tr><td>'+(i++)+'</td><td>'+n+'</td><td>'+c.Desayuno+'</td><td>'+c.Almuerzo+'</td><td>'+c.Cena+'</td></tr>';});
+    if(data.eventuales.Desayuno+data.eventuales.Almuerzo+data.eventuales.Cena>0)html+='<tr><td>'+(i++)+'</td><td>Eventual</td><td>'+data.eventuales.Desayuno+'</td><td>'+data.eventuales.Almuerzo+'</td><td>'+data.eventuales.Cena+'</td></tr>';
+    html+='<tr style="background:#fff3e0;font-weight:bold;"><td></td><td>TOTAL</td><td>'+data.sub1.Desayuno+'</td><td>'+data.sub1.Almuerzo+'</td><td>'+data.sub1.Cena+'</td></tr>';
+    // bloque 2: seguridad (solo si hay)
+    const haySeg=Object.keys(data.seguridad).length>0;
+    if(haySeg){
+      Object.keys(data.seguridad).forEach(n=>{const c=data.seguridad[n];html+='<tr><td>'+(i++)+'</td><td>'+n+'</td><td>'+c.Desayuno+'</td><td>'+c.Almuerzo+'</td><td>'+c.Cena+'</td></tr>';});
+      html+='<tr style="background:#f3e5f5;font-weight:bold;"><td></td><td>TOTAL</td><td>'+data.sub2.Desayuno+'</td><td>'+data.sub2.Almuerzo+'</td><td>'+data.sub2.Cena+'</td></tr>';
+    }
+    html+='<tr style="background:var(--azulbg);font-weight:bold;"><td></td><td>TOTAL GENERAL</td><td>'+data.total.Desayuno+'</td><td>'+data.total.Almuerzo+'</td><td>'+data.total.Cena+'</td><td></td></tr>';
+    html+='</tbody></table></div>';
+    html+='<div style="margin-top:12px;display:flex;gap:8px;">';
+    html+='<button class="act prim" onclick="genFormatoDiario(\'word\')">Descargar Word</button>';
+    html+='<button class="act" onclick="genFormatoDiario(\'excel\')">Descargar Excel</button>';
+    html+='</div></div>';
+    v.innerHTML=html;
+    window.__RD={fecha:RD_FECHA,num,data};
+  });
+}
+function onRDFecha(){const e=document.getElementById('rd-fecha');if(e)RD_FECHA=e.value;renderResumenDiario();}
+
+// consolida UN dia: personal, contratas, eventuales, seguridad, merienda
+function consolidarDia(fecha,cb){
+  db.ref('solicitudes/'+fecha).get().then(snap=>{
+    const gers=snap.val()||{};
+    const personal={Desayuno:0,Almuerzo:0,Cena:0};
+    const parada={Desayuno:0,Almuerzo:0,Cena:0};
+    const contratas={};
+    Object.keys(gers).forEach(g=>{
+      const s=gers[g];if(!s||s.estado!=='aprobada')return;
+      const exc=s.excluidosAlmuerzo||{};const nExc=Object.keys(exc).length;
+      const excC=s.excluidosCena||{};const nExcC=Object.keys(excC).length;
+      const D=s.totales.Desayuno||0,A=Math.max(0,(s.totales.Almuerzo||0)-nExc),C=Math.max(0,(s.totales.Cena||0)-nExcC);
+      if(s.tipoPlanilla==='ParadaMolino'){parada.Desayuno+=D;parada.Almuerzo+=A;parada.Cena+=C;}
+      else{personal.Desayuno+=D;personal.Almuerzo+=A;personal.Cena+=C;}
+      if(s.contratasExternas)s.contratasExternas.forEach(ct=>{contratas[ct.nom]=contratas[ct.nom]||{Desayuno:0,Almuerzo:0,Cena:0};contratas[ct.nom].Desayuno+=ct.Desayuno||0;contratas[ct.nom].Almuerzo+=ct.Almuerzo||0;contratas[ct.nom].Cena+=ct.Cena||0;});
+    });
+    // carga diaria de RRHH (eventuales, seguridad, merienda)
+    db.ref('cargadiaria/'+fecha).get().then(cdSnap=>{
+      const cd=cdSnap.val()||{};
+      const eventuales=cd.eventuales||{Desayuno:0,Almuerzo:0,Cena:0};
+      const seguridad=cd.seguridad||{};
+      const merienda=cd.merienda||0;
+      // subtotal bloque 1 (personal + parada + contratas + eventuales)
+      const sub1={Desayuno:personal.Desayuno+parada.Desayuno+eventuales.Desayuno,Almuerzo:personal.Almuerzo+parada.Almuerzo+eventuales.Almuerzo,Cena:personal.Cena+parada.Cena+eventuales.Cena};
+      Object.keys(contratas).forEach(n=>{sub1.Desayuno+=contratas[n].Desayuno;sub1.Almuerzo+=contratas[n].Almuerzo;sub1.Cena+=contratas[n].Cena;});
+      const sub2={Desayuno:0,Almuerzo:0,Cena:0};
+      Object.keys(seguridad).forEach(n=>{sub2.Desayuno+=seguridad[n].Desayuno;sub2.Almuerzo+=seguridad[n].Almuerzo;sub2.Cena+=seguridad[n].Cena;});
+      const total={Desayuno:sub1.Desayuno+sub2.Desayuno,Almuerzo:sub1.Almuerzo+sub2.Almuerzo,Cena:sub1.Cena+sub2.Cena};
+      cb({personal,parada,contratas,eventuales,seguridad,merienda,sub1,sub2,total});
+    });
+  });
+}
+
+// genera el formato diario en Word o Excel
+function genFormatoDiario(fmt){
+  const R=window.__RD;if(!R){alert('Abre el resumen diario primero.');return;}
+  db.ref('config/logo').get().then(snap=>{
+    const logo=snap.exists()?snap.val():null;
+    const d=R.data;const fbonita=fechaBonita(R.fecha);
+    // filas
+    const filas=[];let i=1;
+    filas.push([i++,'PERSONAL PIM III CHOCO',d.personal.Desayuno,d.personal.Almuerzo,d.personal.Cena,d.merienda]);
+    if(d.parada.Desayuno+d.parada.Almuerzo+d.parada.Cena>0)filas.push([i++,'PERSONAL PARADA DE MOLINO SAG',d.parada.Desayuno,d.parada.Almuerzo,d.parada.Cena,'']);
+    Object.keys(d.contratas).forEach(n=>{const c=d.contratas[n];filas.push([i++,n,c.Desayuno,c.Almuerzo,c.Cena,'']);});
+    if(d.eventuales.Desayuno+d.eventuales.Almuerzo+d.eventuales.Cena>0)filas.push([i++,'EVENTUAL',d.eventuales.Desayuno,d.eventuales.Almuerzo,d.eventuales.Cena,'']);
+    filas.push(['','TOTAL',d.sub1.Desayuno,d.sub1.Almuerzo,d.sub1.Cena,d.merienda]);
+    const haySeg=Object.keys(d.seguridad).length>0;
+    if(haySeg){
+      Object.keys(d.seguridad).forEach(n=>{const c=d.seguridad[n];filas.push([i++,n,c.Desayuno,c.Almuerzo,c.Cena,'']);});
+      filas.push(['','TOTAL',d.sub2.Desayuno,d.sub2.Almuerzo,d.sub2.Cena,'']);
+    }
+    filas.push(['','TOTAL GENERAL',d.total.Desayuno,d.total.Almuerzo,d.total.Cena,'']);
+
+    if(fmt==='excel'){
+      const aoa=[['FORMATO UNICO DE SOLICITUD DE COMIDAS'],['Fecha: '+fbonita,'','','','N'+String.fromCharCode(176)+' '+R.num],[],['N','SERVICIO','DESAYUNO','ALMUERZO','CENA','MERIENDA NOCTURNA']];
+      filas.forEach(f=>aoa.push(f));
+      aoa.push([]);aoa.push(['ELABORADO POR: Maryoris Contreras','REVISADO POR: Ruth Silva','','RECIBIDO POR: DISTRIBUIDORA BUENA ALIMENTACION']);
+      const wb=XLSX.utils.book_new();const ws=XLSX.utils.aoa_to_sheet(aoa);
+      XLSX.utils.book_append_sheet(wb,ws,'Formato '+R.num);
+      XLSX.writeFile(wb,'Formato_Comidas_'+R.fecha+'_N'+R.num+'.xlsx');
+    }else{
+      let filasHtml='';filas.forEach(f=>{const bold=(f[1]==='TOTAL'||f[1]==='TOTAL GENERAL');filasHtml+='<tr style="'+(bold?'font-weight:bold;background:#eee;':'')+'"><td>'+f[0]+'</td><td>'+f[1]+'</td><td style="text-align:center;">'+f[2]+'</td><td style="text-align:center;">'+f[3]+'</td><td style="text-align:center;">'+f[4]+'</td><td style="text-align:center;">'+f[5]+'</td></tr>';});
+      const logoHtml=logo?'<div style="text-align:center;"><img src="'+logo+'" style="max-width:600px;"></div>':'';
+      const html='<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8"></head><body>'+logoHtml+
+        '<h3 style="text-align:center;">FORMATO UNICO DE SOLICITUD DE COMIDAS</h3>'+
+        '<table width="100%"><tr><td><b>Fecha:</b> '+fbonita+'</td><td style="text-align:right;"><b>N'+String.fromCharCode(176)+' '+R.num+'</b></td></tr></table>'+
+        '<table border="1" cellspacing="0" cellpadding="4" style="border-collapse:collapse;width:100%;"><tr style="background:#4472C4;color:#fff;"><th>N</th><th>SERVICIO</th><th>DESAYUNO</th><th>ALMUERZO</th><th>CENA</th><th>MERIENDA NOCTURNA</th></tr>'+filasHtml+'</table>'+
+        '<br><table width="100%"><tr><td>ELABORADO POR:<br><br>______<br>Maryoris Contreras</td><td>REVISADO POR:<br><br>______<br>Ruth Silva</td><td>RECIBIDO POR:<br>DISTRIBUIDORA BUENA ALIMENTACION<br>CI:______ HORA:______<br>FIRMA:______</td></tr></table>'+
+        '<p style="font-size:11px;">SE IMPRIME UNA ORIGINAL Y COPIA DE ESTA SOLICITUD</p>'+
+        '<p style="font-size:11px;"><b>OBSERVACION:</b> El requerimiento de las cantidades de comidas del personal administrativo y obrero van de acuerdo a las solicitudes emitidas y aprobadas por cada gerencia y/o coordinacion del Parque Industrial Minero III Choco-Isidora.</p></body></html>';
+      descargarWord(html,'Formato_Comidas_'+R.fecha+'_N'+R.num+'.doc');
+    }
+  });
+}
+
+// ---------- PLANILLAS MANUALES (RRHH carga totales de dias pendientes) ----------
+let MAN_FECHA=null;
+function renderManuales(){
+  const v=document.getElementById('view-manuales');
+  if(ROLE!=='RRHH'){v.innerHTML='<div class="card"><div class="note danger">Solo RRHH puede cargar planillas manuales.</div></div>';return;}
+  if(!MAN_FECHA)MAN_FECHA=today;
+  // lista de gerencias de la nomina
+  const gerencias=[...new Set(NOMINA.map(p=>p.ger))].sort();
+  let html='<div class="card"><h2>Planillas manuales (pendientes por subir)</h2>';
+  html+='<div class="muted">Para ponerse al dia: carga aqui los totales de las planillas que RRHH tiene en fisico (dias que aun no estaban en el sistema). Quedan aprobadas de una vez. Puedes eliminarlas y volver a cargar si te equivocas.</div>';
+  html+='<div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr;gap:8px;align-items:end;margin-top:12px;">';
+  html+='<div><label style="font-size:12px;">Gerencia/Coordinacion</label><select id="man-ger" style="width:100%;padding:8px;">'+gerencias.map(g=>'<option>'+g+'</option>').join('')+'</select></div>';
+  html+='<div><label style="font-size:12px;">Fecha</label><input type="date" id="man-fecha" value="'+MAN_FECHA+'" style="width:100%;padding:8px;"></div>';
+  html+='<div><label style="font-size:12px;">Desayuno</label><input type="number" min="0" id="man-d" value="0" style="width:100%;padding:8px;"></div>';
+  html+='<div><label style="font-size:12px;">Almuerzo</label><input type="number" min="0" id="man-a" value="0" style="width:100%;padding:8px;"></div>';
+  html+='<div><label style="font-size:12px;">Cena</label><input type="number" min="0" id="man-c" value="0" style="width:100%;padding:8px;"></div>';
+  html+='</div>';
+  html+='<div style="margin-top:8px;"><label style="font-size:12px;">Tipo:</label> <select id="man-tipo" style="padding:6px;"><option value="Personal">Personal normal</option><option value="ParadaMolino">Parada de Molino SAG</option></select>';
+  html+=' <input type="file" id="man-scan" accept="image/*,application/pdf" style="margin-left:10px;"><span class="muted" style="font-size:11px;"> Escaner (opcional)</span></div>';
+  html+='<div style="margin-top:10px;"><button class="act prim" onclick="guardarManual()">Cargar planilla (aprobada)</button></div>';
+  html+='</div>';
+  // lista de las cargadas manualmente
+  html+='<div class="card"><h2>Planillas cargadas manualmente</h2><div class="muted">Filtra por mes para revisar. Puedes eliminar una si te equivocaste.</div>';
+  html+='<div style="margin-top:8px;"><label>Mes: </label><input type="month" id="man-mes" value="'+mesActual()+'" onchange="cargarManuales()" style="padding:6px;"></div>';
+  html+='<div id="man-lista" style="margin-top:10px;"><div class="muted">Cargando...</div></div></div>';
+  v.innerHTML=html;
+  cargarManuales();
+}
+
+function guardarManual(){
+  const ger=(document.getElementById('man-ger')||{}).value;
+  const fecha=(document.getElementById('man-fecha')||{}).value;
+  const tipo=(document.getElementById('man-tipo')||{}).value;
+  const D=parseInt((document.getElementById('man-d')||{}).value)||0;
+  const A=parseInt((document.getElementById('man-a')||{}).value)||0;
+  const C=parseInt((document.getElementById('man-c')||{}).value)||0;
+  if(!ger||!fecha){alert('Elige gerencia y fecha');return;}
+  if(D+A+C===0){alert('Indica al menos una comida');return;}
+  const claveGer=(tipo==='ParadaMolino'?ger+'__ParadaMolino':ger);
+  const guardar=(scan)=>{
+    const registro={
+      gerencia:ger,fecha:fecha,tipoPlanilla:tipo,
+      enviado:new Date().toISOString(),
+      porUsuario:(auth.currentUser?auth.currentUser.email:''),
+      cargaManualRRHH:true,
+      estado:'aprobada',        // aprobada de una vez
+      declarado:{Desayuno:D,Almuerzo:A,Cena:C},
+      totales:{Desayuno:D,Almuerzo:A,Cena:C},
+      detalle:{Desayuno:[],Almuerzo:[],Cena:[]},
+      escaner:scan||null
+    };
+    db.ref('solicitudes/'+fecha+'/'+claveGer).set(registro).then(()=>{alert('Planilla de '+ger+' ('+fecha+') cargada y aprobada.');cargarManuales();}).catch(e=>alert('Error: '+e.message));
+  };
+  const f=document.getElementById('man-scan');
+  if(f&&f.files[0]){
+    const file=f.files[0];const r=new FileReader();
+    if(file.type==='application/pdf'){r.onload=()=>guardar({tipo:'pdf',data:r.result,nombre:file.name,legible:true});r.readAsDataURL(file);}
+    else{
+      r.onload=()=>{const img=new Image();img.onload=()=>{const maxW=1000;const esc=Math.min(1,maxW/img.width);const cw=img.width*esc,ch=img.height*esc;const cv=document.createElement('canvas');cv.width=cw;cv.height=ch;cv.getContext('2d').drawImage(img,0,0,cw,ch);guardar({tipo:'img',data:cv.toDataURL('image/jpeg',0.6),nombre:file.name,legible:true});};img.src=r.result;};r.readAsDataURL(file);
+    }
+  }else{guardar(null);}
+}
+
+function cargarManuales(){
+  const cont=document.getElementById('man-lista');if(!cont)return;
+  const mes=(document.getElementById('man-mes')||{}).value||mesActual();
+  db.ref('solicitudes').get().then(snap=>{
+    const all=snap.val()||{};
+    const filas=[];
+    Object.keys(all).forEach(fecha=>{
+      if(!fecha.startsWith(mes))return;
+      Object.keys(all[fecha]).forEach(g=>{
+        const s=all[fecha][g];
+        if(s&&s.cargaManualRRHH){filas.push({fecha,clave:g,s});}
+      });
+    });
+    if(filas.length===0){cont.innerHTML='<div class="note">No hay planillas manuales cargadas en '+mes+'.</div>';return;}
+    filas.sort((a,b)=>a.fecha<b.fecha?-1:1);
+    let html='<div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Gerencia</th><th>Tipo</th><th>Des</th><th>Alm</th><th>Cena</th><th></th></tr></thead><tbody>';
+    filas.forEach(f=>{
+      const tipo=f.s.tipoPlanilla==='ParadaMolino'?'Parada Molino':'Personal';
+      html+='<tr><td>'+f.fecha+'</td><td>'+f.s.gerencia+'</td><td>'+tipo+'</td><td>'+f.s.totales.Desayuno+'</td><td>'+f.s.totales.Almuerzo+'</td><td>'+f.s.totales.Cena+'</td><td><button class="act" style="padding:2px 8px;font-size:11px;background:var(--rojo);color:#fff;" onclick="eliminarManual(\''+f.fecha+'\',\''+f.clave+'\')">Eliminar</button></td></tr>';
+    });
+    html+='</tbody></table></div>';
+    cont.innerHTML=html;
+  }).catch(e=>{cont.innerHTML='<div class="note danger">Error: '+e.message+'</div>';});
+}
+
+function eliminarManual(fecha,clave){
+  if(!confirm('Eliminar esta planilla manual? Podras cargarla de nuevo.'))return;
+  db.ref('solicitudes/'+fecha+'/'+clave).remove().then(()=>cargarManuales()).catch(e=>alert('Error: '+e.message));
 }
 
 // ---------- 2. ENTREGA ----------
@@ -333,14 +1374,28 @@ function renderEntrega2(){
   let html='<div class="tablewrap"><table><thead><tr><th>Estado</th><th>Cedula</th><th>Nombre</th><th>Gerencia</th><th>Observacion</th></tr></thead><tbody>';
   list.slice(0,1200).forEach(p=>{
     const on=CUR.entregado[p.ced];
-    const btn=on?'<button class="act" style="background:var(--verdebg);color:var(--verde);border-color:var(--verde);" data-c="'+p.ced+'" onclick="toggleEnt(this.getAttribute(\'data-c\'))">&#10003; Entregado</button>':'<button class="act prim" data-c="'+p.ced+'" onclick="toggleEnt(this.getAttribute(\'data-c\'))">Entregar</button>';
+    let btn;
+    if(on){
+      // Ya entregado: la contrata NO puede desmarcar (queda fijo). RRHH si puede corregir.
+      if(ROLE==='CONTRATA'){
+        btn='<button class="act" style="background:var(--verdebg);color:var(--verde);border-color:var(--verde);cursor:default;" disabled>&#10003; Entregado</button>';
+      }else{
+        btn='<button class="act" style="background:var(--verdebg);color:var(--verde);border-color:var(--verde);" data-c="'+p.ced+'" onclick="toggleEnt(this.getAttribute(\'data-c\'))" title="RRHH puede corregir">&#10003; Entregado (corregir)</button>';
+      }
+    }else{
+      btn='<button class="act prim" data-c="'+p.ced+'" onclick="toggleEnt(this.getAttribute(\'data-c\'))">Entregar</button>';
+    }
     const obs='<input class="obs" value="'+(CUR.obs[p.ced]||'').replace(/"/g,'&quot;')+'" placeholder="observacion..." data-c="'+p.ced+'" onchange="setObs(this.getAttribute(\'data-c\'),this.value)">';
     html+='<tr><td>'+btn+'</td><td>'+p.ced+'</td><td>'+p.nom+'</td><td>'+p.ger+'</td><td>'+obs+'</td></tr>';
   });
   html+='</tbody></table></div>';
   document.getElementById('ent-list').innerHTML=html;
 }
-function toggleEnt(ced){wEnt(ced,!CUR.entregado[ced]);}
+function toggleEnt(ced){
+  // Blindaje: la contrata solo puede marcar (pasar a entregado), nunca desmarcar
+  if(ROLE==='CONTRATA' && CUR.entregado[ced]){return;}
+  wEnt(ced,!CUR.entregado[ced]);
+}
 function setObs(ced,val){wObs(ced,val.trim());}
 
 // ---------- 3. CONCILIACION ----------
@@ -411,43 +1466,417 @@ function despachadoDia(dayData){
 function renderCierre(){
   const v=document.getElementById('view-cierre');
   const mes=mesActual();
-  v.innerHTML='<div class="card"><h2>Cierre mensual de comidas despachadas</h2><div class="muted">Cargando datos del mes '+mes+'...</div></div>';
-  db.ref('dias').get().then(snap=>{
-    const all=snap.val()||{auth:{},entregado:{},obs:{},eventuales:[],seguridad:{},excluidos:{}};
-    const byFecha={};
-    Object.keys(all).forEach(k=>{
-      const us=k.lastIndexOf('_');const fecha=k.slice(0,us);const m=k.slice(us+1);
+  v.innerHTML='<div class="card"><h2>Cierre mensual de comidas</h2><div class="muted">Consolidando el mes '+mes+'...</div></div>';
+  db.ref('solicitudes').get().then(snap=>{
+    const all=snap.val()||{};
+    // Categorias del cierre
+    const cat={
+      'Personal PIM III Choco':{Desayuno:0,Almuerzo:0,Cena:0},
+      'Parada de Molino SAG':{Desayuno:0,Almuerzo:0,Cena:0},
+      'Eventuales':{Desayuno:0,Almuerzo:0,Cena:0},
+      'Contratas externas':{Desayuno:0,Almuerzo:0,Cena:0},
+      'Cuerpos de seguridad':{Desayuno:0,Almuerzo:0,Cena:0}
+    };
+    const contratasDetalle={};   // nombre -> {D,A,C}
+    // recorrer todas las fechas del mes
+    Object.keys(all).forEach(fecha=>{
       if(!fecha.startsWith(mes))return;
-      byFecha[fecha]=byFecha[fecha]||{};
-      byFecha[fecha][m]=despachadoDia(all[k]);
+      const gers=all[fecha];
+      Object.keys(gers).forEach(claveGer=>{
+        const s=gers[claveGer];
+        if(!s||s.estado!=='aprobada')return;   // solo aprobadas
+        // restar excluidos del almuerzo y de la cena
+        const exc=s.excluidosAlmuerzo||{};
+        const nExcAlm=Object.keys(exc).length;
+        const excC=s.excluidosCena||{};
+        const nExcCena=Object.keys(excC).length;
+        const D=s.totales.Desayuno||0, A=Math.max(0,(s.totales.Almuerzo||0)-nExcAlm), C=Math.max(0,(s.totales.Cena||0)-nExcCena);
+        if(s.tipoPlanilla==='ParadaMolino'){
+          cat['Parada de Molino SAG'].Desayuno+=D;cat['Parada de Molino SAG'].Almuerzo+=A;cat['Parada de Molino SAG'].Cena+=C;
+        }else{
+          cat['Personal PIM III Choco'].Desayuno+=D;cat['Personal PIM III Choco'].Almuerzo+=A;cat['Personal PIM III Choco'].Cena+=C;
+        }
+        // contratas externas
+        if(s.contratasExternas){
+          s.contratasExternas.forEach(ct=>{
+            cat['Contratas externas'].Desayuno+=ct.Desayuno||0;cat['Contratas externas'].Almuerzo+=ct.Almuerzo||0;cat['Contratas externas'].Cena+=ct.Cena||0;
+            contratasDetalle[ct.nom]=contratasDetalle[ct.nom]||{Desayuno:0,Almuerzo:0,Cena:0};
+            contratasDetalle[ct.nom].Desayuno+=ct.Desayuno||0;contratasDetalle[ct.nom].Almuerzo+=ct.Almuerzo||0;contratasDetalle[ct.nom].Cena+=ct.Cena||0;
+          });
+        }
+      });
     });
-    const fechas=Object.keys(byFecha).sort();
-    let html='<div class="card"><h2>Cierre mensual de comidas despachadas</h2><div class="muted">Consolidado del mes '+mes+' para el pago a la contrata. Cantidades realmente entregadas.</div>';
-    if(fechas.length===0){html+='<div class="note">Aun no hay comidas despachadas registradas en '+mes+'. Cambia el mes con el selector de Fecha arriba.</div></div>';v.innerHTML=html;return;}
-    const tot={Desayuno:0,Almuerzo:0,Cena:0};
-    const filas=[];
-    fechas.forEach(f=>{
-      const d=byFecha[f];const D=(d.Desayuno||{}).total||0,A=(d.Almuerzo||{}).total||0,C=(d.Cena||{}).total||0;
-      tot.Desayuno+=D;tot.Almuerzo+=A;tot.Cena+=C;
-      filas.push([f,D,A,C,D+A+C]);
+    // acumular la carga diaria de RRHH de todo el mes (eventuales, seguridad, merienda)
+    db.ref('cargadiaria').get().then(cdSnap=>{
+      const cd=cdSnap.val()||{};
+      const extra={eventuales:{Desayuno:0,Almuerzo:0,Cena:0},seguridad:{},merienda:0,isidora:{Desayuno:0,Almuerzo:0,Cena:0}};
+      const desglose=[];   // por dia
+      Object.keys(cd).forEach(fecha=>{
+        if(!fecha.startsWith(mes))return;
+        const d=cd[fecha];
+        if(d.eventuales){extra.eventuales.Desayuno+=d.eventuales.Desayuno||0;extra.eventuales.Almuerzo+=d.eventuales.Almuerzo||0;extra.eventuales.Cena+=d.eventuales.Cena||0;}
+        if(d.merienda)extra.merienda+=d.merienda||0;
+        if(d.seguridad){Object.keys(d.seguridad).forEach(nom=>{extra.seguridad[nom]=extra.seguridad[nom]||{Desayuno:0,Almuerzo:0,Cena:0};extra.seguridad[nom].Desayuno+=d.seguridad[nom].Desayuno||0;extra.seguridad[nom].Almuerzo+=d.seguridad[nom].Almuerzo||0;extra.seguridad[nom].Cena+=d.seguridad[nom].Cena||0;});}
+        desglose.push({fecha,d});
+      });
+      // Isidora se lee del cierre-extra (lo teclea RRHH una vez, es un resumen mensual)
+      db.ref('cierre-extra/'+mes).get().then(exSnap=>{
+        const ex=exSnap.val()||{};
+        if(ex.isidora)extra.isidora=ex.isidora;
+        pintarCierre(v,mes,cat,contratasDetalle,extra,desglose);
+      });
     });
-    const gtot=tot.Desayuno+tot.Almuerzo+tot.Cena;
-    html+='<div class="kpis" style="margin-top:12px;">';
-    html+='<div class="kpi"><div class="l">Desayunos mes</div><div class="v">'+tot.Desayuno+'</div></div>';
-    html+='<div class="kpi"><div class="l">Almuerzos mes</div><div class="v">'+tot.Almuerzo+'</div></div>';
-    html+='<div class="kpi"><div class="l">Cenas mes</div><div class="v">'+tot.Cena+'</div></div>';
-    html+='<div class="kpi" style="background:var(--azulbg);"><div class="l" style="color:var(--azul)">TOTAL GENERAL MES</div><div class="v" style="color:var(--azul)">'+gtot+'</div></div></div>';
-    if(ROLE==='RRHH')html+='<div style="margin:10px 0;"><button class="act prim" onclick=\'exportCierreXLSX('+JSON.stringify(JSON.stringify({mes,filas,tot,gtot}))+')\'>Exportar cierre mensual (Excel)</button> <button class="act" onclick="guardarCierre()">Guardar cierre en historico</button></div>';
-    html+='</div>';
-    html+='<div class="card"><h2>Desglose dia por dia &mdash; '+mes+'</h2><div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Desayuno</th><th>Almuerzo</th><th>Cena</th><th>Total dia</th></tr></thead><tbody>';
-    filas.forEach(r=>{html+='<tr><td>'+r[0]+'</td><td>'+r[1]+'</td><td>'+r[2]+'</td><td>'+r[3]+'</td><td><b>'+r[4]+'</b></td></tr>';});
-    html+='<tr style="background:var(--azulbg);font-weight:bold;"><td>TOTAL MES</td><td>'+tot.Desayuno+'</td><td>'+tot.Almuerzo+'</td><td>'+tot.Cena+'</td><td>'+gtot+'</td></tr>';
-    html+='</tbody></table></div></div>';
-    // historico de cierres guardados
-    html+='<div class="card"><h2>Historico de cierres guardados</h2><div class="muted">Cierres consolidados de meses anteriores. Quedan permanentes en el sistema.</div><div id="hist" class="tablewrap" style="margin-top:8px;"><div class="muted" style="padding:10px;">cargando...</div></div></div>';
-    v.innerHTML=html;
-    renderHistorico();
+  }).catch(e=>{v.innerHTML='<div class="card"><div class="note danger">Error al consolidar: '+e.message+'</div></div>';});
+}
+
+function pintarCierre(v,mes,cat,contratasDetalle,extra,desglose){
+  const esRRHH=(ROLE==='RRHH');
+  // sumar eventuales y seguridad manuales
+  const ev=extra.eventuales||{Desayuno:0,Almuerzo:0,Cena:0};
+  cat['Eventuales'].Desayuno=ev.Desayuno||0;cat['Eventuales'].Almuerzo=ev.Almuerzo||0;cat['Eventuales'].Cena=ev.Cena||0;
+  const seg=extra.seguridad||{};
+  let segT={Desayuno:0,Almuerzo:0,Cena:0};
+  Object.keys(seg).forEach(nom=>{segT.Desayuno+=seg[nom].Desayuno||0;segT.Almuerzo+=seg[nom].Almuerzo||0;segT.Cena+=seg[nom].Cena||0;});
+  cat['Cuerpos de seguridad']=segT;
+  const merienda=extra.merienda||0;
+  const isi=extra.isidora||{Desayuno:0,Almuerzo:0,Cena:0};
+
+  // totales Choco
+  let totCH={Desayuno:0,Almuerzo:0,Cena:0};
+  Object.keys(cat).forEach(k=>{totCH.Desayuno+=cat[k].Desayuno;totCH.Almuerzo+=cat[k].Almuerzo;totCH.Cena+=cat[k].Cena;});
+  // total general (Choco + Isidora)
+  const gD=totCH.Desayuno+(isi.Desayuno||0), gA=totCH.Almuerzo+(isi.Almuerzo||0), gC=totCH.Cena+(isi.Cena||0);
+
+  let html='<div class="card"><h2>Cierre mensual &mdash; '+mes+'</h2><div class="muted">Consolidado de comidas del mes (solo solicitudes aprobadas). Choco se calcula del sistema; Isidora, eventuales, seguridad y merienda los carga RRHH.</div>';
+  html+='<div class="kpis" style="margin-top:12px;">';
+  html+='<div class="kpi"><div class="l">Desayunos (Choco+Isidora)</div><div class="v">'+gD+'</div></div>';
+  html+='<div class="kpi"><div class="l">Almuerzos</div><div class="v">'+gA+'</div></div>';
+  html+='<div class="kpi"><div class="l">Cenas</div><div class="v">'+gC+'</div></div>';
+  html+='<div class="kpi" style="background:var(--azulbg);"><div class="l" style="color:var(--azul)">Merienda Nocturna</div><div class="v" style="color:var(--azul)">'+merienda+'</div></div>';
+  html+='</div>';
+
+  // tabla Resumen de Comensales Choco con 3 subtotales (como el formato oficial)
+  html+='<div class="card" style="margin-top:12px;"><h2>Resumen de Comensales Planta Choco &mdash; '+mesNombre(mes)+'</h2><div class="tablewrap"><table><thead><tr><th>Personal Planta Choco</th><th>Desayuno</th><th>Almuerzo</th><th>Cena</th></tr></thead><tbody>';
+  // Bloque 1: personal PIM + eventuales + parada molino (solo los que tengan datos, personal siempre)
+  let sub1={Desayuno:0,Almuerzo:0,Cena:0};
+  html+='<tr><td>Personal PIM III Choco</td><td>'+cat['Personal PIM III Choco'].Desayuno+'</td><td>'+cat['Personal PIM III Choco'].Almuerzo+'</td><td>'+cat['Personal PIM III Choco'].Cena+'</td></tr>';
+  sub1.Desayuno+=cat['Personal PIM III Choco'].Desayuno;sub1.Almuerzo+=cat['Personal PIM III Choco'].Almuerzo;sub1.Cena+=cat['Personal PIM III Choco'].Cena;
+  ['Eventuales','Parada de Molino SAG'].forEach(k=>{
+    const t=cat[k].Desayuno+cat[k].Almuerzo+cat[k].Cena;
+    if(t>0){html+='<tr><td>'+k+'</td><td>'+cat[k].Desayuno+'</td><td>'+cat[k].Almuerzo+'</td><td>'+cat[k].Cena+'</td></tr>';}
+    sub1.Desayuno+=cat[k].Desayuno;sub1.Almuerzo+=cat[k].Almuerzo;sub1.Cena+=cat[k].Cena;
   });
+  html+='<tr style="background:#fff3e0;font-weight:bold;"><td>SUBTOTAL</td><td>'+sub1.Desayuno+'</td><td>'+sub1.Almuerzo+'</td><td>'+sub1.Cena+'</td></tr>';
+  // Bloque 2: contratas nombradas una por una
+  let sub2={Desayuno:0,Almuerzo:0,Cena:0};
+  const nomsCont=Object.keys(contratasDetalle);
+  if(nomsCont.length>0){
+    nomsCont.forEach(n=>{const c=contratasDetalle[n];html+='<tr><td>'+n+'</td><td>'+c.Desayuno+'</td><td>'+c.Almuerzo+'</td><td>'+c.Cena+'</td></tr>';sub2.Desayuno+=c.Desayuno;sub2.Almuerzo+=c.Almuerzo;sub2.Cena+=c.Cena;});
+    html+='<tr style="background:#e3f2fd;font-weight:bold;"><td>SUBTOTAL CONTRATAS</td><td>'+sub2.Desayuno+'</td><td>'+sub2.Almuerzo+'</td><td>'+sub2.Cena+'</td></tr>';
+  }
+  // Bloque 3: cuerpos de seguridad nombrados
+  let sub3={Desayuno:0,Almuerzo:0,Cena:0};
+  const nomsSeg=Object.keys(seg);
+  if(nomsSeg.length>0){
+    nomsSeg.forEach(n=>{const c=seg[n];html+='<tr><td>'+n+'</td><td>'+c.Desayuno+'</td><td>'+c.Almuerzo+'</td><td>'+c.Cena+'</td></tr>';sub3.Desayuno+=c.Desayuno;sub3.Almuerzo+=c.Almuerzo;sub3.Cena+=c.Cena;});
+    html+='<tr style="background:#f3e5f5;font-weight:bold;"><td>SUBTOTAL SEGURIDAD</td><td>'+sub3.Desayuno+'</td><td>'+sub3.Almuerzo+'</td><td>'+sub3.Cena+'</td></tr>';
+  }
+  html+='<tr style="background:var(--azulbg);font-weight:bold;font-size:15px;"><td>TOTALES CHOCO</td><td>'+totCH.Desayuno+'</td><td>'+totCH.Almuerzo+'</td><td>'+totCH.Cena+'</td></tr>';
+  html+='<tr><td>Merienda Nocturna</td><td colspan="3" style="text-align:center;font-weight:bold;">'+merienda+'</td></tr>';
+  html+='</tbody></table></div></div>';
+
+  // Resumen Mina Isidora (desglosado, del formato que teclea RRHH)
+  html+='<div class="card"><h2>Resumen de Comidas Mina Isidora &mdash; '+mesNombre(mes)+'</h2>';
+  html+='<div class="muted">RRHH teclea este desglose del resumen que envia Mina Isidora (con su escaner de respaldo).</div>';
+  html+='<div class="tablewrap" style="margin-top:8px;"><table><thead><tr><th>Servicio</th><th>Desayuno</th><th>Almuerzo</th><th>Cena</th></tr></thead><tbody>';
+  const iDesg=extra.isidoraDesglose||{};
+  const grupo1=['Personal PIM III Mina Isidora','Personal CVM','Eventual'];
+  const grupo2=['GPAMO','DGCIM'];
+  let isiSub1={Desayuno:0,Almuerzo:0,Cena:0}, isiSub2={Desayuno:0,Almuerzo:0,Cena:0};
+  grupo1.forEach(c=>{const v=iDesg[c]||{Desayuno:0,Almuerzo:0,Cena:0};html+='<tr><td>'+c+'</td><td>'+v.Desayuno+'</td><td>'+v.Almuerzo+'</td><td>'+v.Cena+'</td></tr>';isiSub1.Desayuno+=v.Desayuno;isiSub1.Almuerzo+=v.Almuerzo;isiSub1.Cena+=v.Cena;});
+  html+='<tr style="background:#fff3e0;font-weight:bold;"><td>SUBTOTAL</td><td>'+isiSub1.Desayuno+'</td><td>'+isiSub1.Almuerzo+'</td><td>'+isiSub1.Cena+'</td></tr>';
+  grupo2.forEach(c=>{const v=iDesg[c]||{Desayuno:0,Almuerzo:0,Cena:0};html+='<tr><td>'+c+'</td><td>'+v.Desayuno+'</td><td>'+v.Almuerzo+'</td><td>'+v.Cena+'</td></tr>';isiSub2.Desayuno+=v.Desayuno;isiSub2.Almuerzo+=v.Almuerzo;isiSub2.Cena+=v.Cena;});
+  html+='<tr style="background:#f3e5f5;font-weight:bold;"><td>SUBTOTAL</td><td>'+isiSub2.Desayuno+'</td><td>'+isiSub2.Almuerzo+'</td><td>'+isiSub2.Cena+'</td></tr>';
+  html+='<tr style="background:var(--azulbg);font-weight:bold;font-size:15px;"><td>TOTAL GENERAL ISIDORA</td><td>'+(isi.Desayuno||0)+'</td><td>'+(isi.Almuerzo||0)+'</td><td>'+(isi.Cena||0)+'</td></tr>';
+  html+='</tbody></table></div>';
+  if(extra.isidoraEscaner){
+    if(extra.isidoraEscaner.tipo==='img')html+='<img src="'+extra.isidoraEscaner.data+'" style="max-width:280px;border:1px solid var(--borde);border-radius:6px;margin-top:8px;cursor:pointer;" onclick="ampliarImg(this.src)">';
+    else html+='<div style="margin-top:8px;"><a href="'+extra.isidoraEscaner.data+'" target="_blank" class="act">Ver escaner Isidora (PDF)</a></div>';
+  }
+  html+='</div>';
+
+  // Resumen Isidora + Solicitud de Pedido (suma de ambos)
+  html+='<div class="card"><h2>Solicitud de Pedido consolidada (Choco + Isidora)</h2><div class="muted">La sorpe: suma del Resumen de Choco (sistema) + el Resumen de Isidora (tecleado por RRHH).</div><div class="tablewrap"><table><thead><tr><th>Concepto</th><th>Cantidad</th></tr></thead><tbody>';
+  html+='<tr><td>Desayunos Planta Choco</td><td>'+totCH.Desayuno+'</td></tr>';
+  html+='<tr><td>Almuerzos Planta Choco</td><td>'+totCH.Almuerzo+'</td></tr>';
+  html+='<tr><td>Cenas Planta Choco</td><td>'+totCH.Cena+'</td></tr>';
+  html+='<tr><td>Desayunos Mina Isidora</td><td>'+(isi.Desayuno||0)+'</td></tr>';
+  html+='<tr><td>Almuerzos Mina Isidora</td><td>'+(isi.Almuerzo||0)+'</td></tr>';
+  html+='<tr><td>Cenas Mina Isidora</td><td>'+(isi.Cena||0)+'</td></tr>';
+  html+='<tr><td>Merienda Nocturna (servida en Mina)</td><td>'+merienda+'</td></tr>';
+  html+='<tr style="background:#e8f5e9;font-weight:bold;"><td>TOTAL GENERAL DE COMIDAS</td><td>'+(gD+gA+gC+merienda)+'</td></tr>';
+  html+='</tbody></table></div></div>';
+
+  // panel de Isidora (RRHH teclea el desglose segun formato de Isidora)
+  if(esRRHH){
+    const iD=extra.isidoraDesglose||{};
+    const catsIsi=['Personal PIM III Mina Isidora','Personal CVM','Eventual','GPAMO','DGCIM'];
+    html+='<div class="card"><h2>Mina Isidora (resumen mensual)</h2><div class="muted">Teclea el desglose segun el formato que envia Mina Isidora, y sube su escaner de respaldo. Los eventuales/seguridad/merienda de Choco se cargan en Carga diaria.</div>';
+    html+='<div class="tablewrap" style="margin-top:8px;"><table><thead><tr><th>Concepto</th><th>Desayuno</th><th>Almuerzo</th><th>Cena</th></tr></thead><tbody>';
+    catsIsi.forEach(c=>{
+      const v=iD[c]||{Desayuno:0,Almuerzo:0,Cena:0};
+      const id=c.replace(/[^A-Za-z]/g,'');
+      html+='<tr><td>'+c+'</td>'+
+        '<td><input type="number" min="0" id="isi-'+id+'-d" value="'+(v.Desayuno||0)+'" style="width:80px;"></td>'+
+        '<td><input type="number" min="0" id="isi-'+id+'-a" value="'+(v.Almuerzo||0)+'" style="width:80px;"></td>'+
+        '<td><input type="number" min="0" id="isi-'+id+'-c" value="'+(v.Cena||0)+'" style="width:80px;"></td></tr>';
+    });
+    html+='</tbody></table></div>';
+    html+='<div style="margin-top:8px;"><input type="file" id="ex-isi-scan" accept="image/*,application/pdf"><span class="muted" style="font-size:11px;"> Escaner del resumen de Isidora</span></div>';
+    html+='<div style="margin-top:10px;"><button class="act prim" onclick="guardarIsidora(\''+mes+'\')">Guardar resumen Isidora</button></div>';
+    html+='</div>';
+  }
+  // desglose diario de la carga (eventuales/seguridad/merienda)
+  if(desglose && desglose.length>0){
+    html+='<div class="card"><h3>Desglose diario de carga RRHH &mdash; '+mes+'</h3><div class="tablewrap" style="max-height:300px;"><table><thead><tr><th>Fecha</th><th>Event. D/A/C</th><th>Merienda</th><th>Seguridad (total D/A/C)</th></tr></thead><tbody>';
+    desglose.sort((a,b)=>a.fecha<b.fecha?-1:1).forEach(x=>{
+      const ev=x.d.eventuales||{Desayuno:0,Almuerzo:0,Cena:0};
+      let sD=0,sA=0,sC=0;if(x.d.seguridad)Object.keys(x.d.seguridad).forEach(n=>{sD+=x.d.seguridad[n].Desayuno||0;sA+=x.d.seguridad[n].Almuerzo||0;sC+=x.d.seguridad[n].Cena||0;});
+      html+='<tr><td>'+x.fecha+'</td><td>'+ev.Desayuno+'/'+ev.Almuerzo+'/'+ev.Cena+'</td><td>'+(x.d.merienda||0)+'</td><td>'+sD+'/'+sA+'/'+sC+'</td></tr>';
+    });
+    html+='</tbody></table></div></div>';
+  }
+  // Generar documentos oficiales
+  if(esRRHH){
+    html+='<div class="card"><h2>Generar documentos del cierre</h2>';
+    html+='<div class="muted">Sube el membrete/logo institucional (una vez) y genera los documentos oficiales en Word y PDF.</div>';
+    html+='<div style="margin-top:8px;"><input type="file" id="logo-file" accept="image/*" onchange="subirLogo(this)"> <span class="muted" style="font-size:12px;">Membrete/logo (imagen)</span><span id="logo-estado" style="margin-left:8px;"></span></div>';
+    // guardar los datos del cierre en variable global para los generadores
+    html+='<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">';
+    html+='<button class="act prim" onclick="genResumenChoco(\'word\')">Resumen Choco (Word)</button>';
+    html+='<button class="act" onclick="genResumenChoco(\'pdf\')">Resumen Choco (PDF)</button>';
+    html+='<button class="act prim" onclick="genSorpe(\'word\')">Solicitud de Pedido (Word)</button>';
+    html+='<button class="act" onclick="genSorpe(\'pdf\')">Solicitud de Pedido (PDF)</button>';
+    html+='<button class="act prim" onclick="genMemos(\'word\')">Memos (Word)</button>';
+    html+='<button class="act" onclick="genMemos(\'pdf\')">Memos (PDF)</button>';
+    html+='</div>';
+    html+='<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--borde);">';
+    html+='<h3 style="margin-bottom:6px;">Limpieza de escaneres</h3>';
+    html+='<div class="muted" style="margin-bottom:8px;">A fin de mes, luego de generar los documentos, puedes borrar los escaneres de las planillas de '+mes+' para liberar espacio. Los totales y el cierre NO se borran, solo las imagenes.</div>';
+    html+='<button class="act" style="background:var(--rojo);color:#fff;" onclick="limpiarEscaneres(\''+mes+'\')">Borrar escaneres de '+mes+'</button>';
+    html+='</div></div>';
+  }
+  v.innerHTML=html;
+  // guardar datos para los generadores
+  window.__CIERRE={mes,cat,contratasDetalle,seg,merienda,totCH,isi,gD,gA,gC,sub1,sub2,sub3};
+}
+
+function subirLogo(input){
+  const f=input.files[0];if(!f)return;
+  const r=new FileReader();
+  r.onload=()=>{db.ref('config/logo').set(r.result).then(()=>{document.getElementById('logo-estado').innerHTML='<span style="color:var(--verde);">Logo guardado</span>';}).catch(e=>alert('Error: '+e.message));};
+  r.readAsDataURL(f);
+}
+
+// Limpieza de escaneres del mes: borra solo las imagenes, deja los totales intactos
+function limpiarEscaneres(mes){
+  if(!confirm('Seguro que quieres borrar los escaneres de las planillas de '+mes+'?\n\nLos totales y el cierre NO se borran, solo las imagenes. Esto no se puede deshacer.'))return;
+  db.ref('solicitudes').get().then(snap=>{
+    const all=snap.val()||{};
+    const updates={};
+    let n=0;
+    Object.keys(all).forEach(fecha=>{
+      if(!fecha.startsWith(mes))return;
+      Object.keys(all[fecha]).forEach(ger=>{
+        if(all[fecha][ger] && all[fecha][ger].escaner){
+          updates['solicitudes/'+fecha+'/'+ger+'/escaner']=null;n++;
+        }
+      });
+    });
+    // tambien el escaner de isidora
+    updates['cierre-extra/'+mes+'/isidoraEscaner']=null;
+    if(n===0){alert('No hay escaneres para borrar en '+mes+'.');return;}
+    db.ref().update(updates).then(()=>{alert('Se borraron '+n+' escaneres de '+mes+'. Los totales quedan intactos.');renderCierre();}).catch(e=>alert('Error: '+e.message));
+  });
+}
+
+// nombre bonito del mes
+function mesNombre(mes){
+  const [a,m]=mes.split('-');
+  const nombres=['','ENERO','FEBRERO','MARZO','ABRIL','MAYO','JUNIO','JULIO','AGOSTO','SEPTIEMBRE','OCTUBRE','NOVIEMBRE','DICIEMBRE'];
+  return nombres[parseInt(m)]+' '+a;
+}
+
+// ===== RESUMEN DE COMENSALES PLANTA CHOCO =====
+function genResumenChoco(fmt){
+  const C=window.__CIERRE;if(!C){alert('Primero abre el cierre.');return;}
+  db.ref('config/logo').get().then(snap=>{
+    const logo=snap.exists()?snap.val():null;
+    const mesTxt=mesNombre(C.mes);
+    // filas del resumen
+    const filas=[];
+    filas.push(['1','Personal PIM III Choco',C.cat['Personal PIM III Choco'].Desayuno,C.cat['Personal PIM III Choco'].Almuerzo,C.cat['Personal PIM III Choco'].Cena]);
+    filas.push(['2','Eventuales',C.cat['Eventuales'].Desayuno,C.cat['Eventuales'].Almuerzo,C.cat['Eventuales'].Cena]);
+    filas.push(['3','Personal Parada de Molino SAG',C.cat['Parada de Molino SAG'].Desayuno,C.cat['Parada de Molino SAG'].Almuerzo,C.cat['Parada de Molino SAG'].Cena]);
+    filas.push(['SUB','SUBTOTAL',C.sub1.Desayuno,C.sub1.Almuerzo,C.sub1.Cena]);
+    let i=4;
+    Object.keys(C.contratasDetalle).forEach(n=>{const c=C.contratasDetalle[n];filas.push([i++,n,c.Desayuno,c.Almuerzo,c.Cena]);});
+    if(Object.keys(C.contratasDetalle).length>0)filas.push(['SUB','SUBTOTAL',C.sub2.Desayuno,C.sub2.Almuerzo,C.sub2.Cena]);
+    Object.keys(C.seg).forEach(n=>{const c=C.seg[n];filas.push([i++,n,c.Desayuno,c.Almuerzo,c.Cena]);});
+    if(Object.keys(C.seg).length>0)filas.push(['SUB','SUBTOTAL',C.sub3.Desayuno,C.sub3.Almuerzo,C.sub3.Cena]);
+    filas.push(['TOT','TOTALES',C.totCH.Desayuno,C.totCH.Almuerzo,C.totCH.Cena]);
+
+    if(fmt==='pdf'){
+      const {jsPDF}=window.jspdf;const doc=new jsPDF();
+      let y=15;
+      if(logo){try{doc.addImage(logo,'PNG',15,8,180,25);y=38;}catch(e){}}
+      doc.setFontSize(13);doc.setFont(undefined,'bold');
+      doc.text('RESUMEN DE COMENSALES PLANTA CHOCO MES DE '+mesTxt,105,y,{align:'center'});y+=8;
+      doc.autoTable({
+        startY:y,
+        head:[['Item','Personal Planta Choco','Desayuno','Almuerzo','Cena']],
+        body:filas.map(f=>[f[0]==='SUB'||f[0]==='TOT'?'':f[0],f[1],f[2],f[3],f[4]]),
+        theme:'grid',
+        headStyles:{fillColor:[68,114,196]},
+        didParseCell:(d)=>{const raw=filas[d.row.index];if(raw&&(raw[0]==='SUB'||raw[0]==='TOT')){d.cell.styles.fontStyle='bold';d.cell.styles.fillColor=raw[0]==='TOT'?[200,230,201]:[255,243,224];}}
+      });
+      let fy=doc.lastAutoTable.finalY+8;
+      doc.setFontSize(11);doc.text('Merienda Nocturna: '+C.merienda,15,fy);fy+=20;
+      doc.setFontSize(9);
+      doc.text('ELABORADO POR:',15,fy);doc.text('REVISADO POR:',80,fy);doc.text('APROBADO POR:',145,fy);fy+=15;
+      doc.text('Lcda. Maryoris Contreras',15,fy);doc.text('Lcda. Ruth Silva',80,fy);doc.text('Abg. Luis Sequera',145,fy);fy+=5;
+      doc.text('Analista Encargada',15,fy);doc.text('Coord. Gestion Humana',80,fy);doc.text('Gerente Gestion Adm.',145,fy);
+      doc.save('Resumen_Comensales_Choco_'+C.mes+'.pdf');
+    }else{
+      // Word via HTML
+      let tabla='<table border="1" cellspacing="0" cellpadding="4" style="border-collapse:collapse;width:100%;"><tr style="background:#4472C4;color:#fff;"><th>Item</th><th>Personal Planta Choco</th><th>Desayuno</th><th>Almuerzo</th><th>Cena</th></tr>';
+      filas.forEach(f=>{const bold=(f[0]==='SUB'||f[0]==='TOT');const bg=f[0]==='TOT'?'#C8E6C9':(f[0]==='SUB'?'#FFF3E0':'#fff');tabla+='<tr style="background:'+bg+';'+(bold?'font-weight:bold;':'')+'"><td>'+(bold?'':f[0])+'</td><td>'+f[1]+'</td><td>'+f[2]+'</td><td>'+f[3]+'</td><td>'+f[4]+'</td></tr>';});
+      tabla+='</table>';
+      const logoHtml=logo?'<div style="text-align:center;"><img src="'+logo+'" style="max-width:600px;"></div>':'';
+      const html='<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8"></head><body>'+logoHtml+'<h3 style="text-align:center;">RESUMEN DE COMENSALES PLANTA CHOCO MES DE '+mesTxt+'</h3>'+tabla+'<p><b>Merienda Nocturna:</b> '+C.merienda+'</p><br><br><table width="100%"><tr><td>ELABORADO POR:<br><br>____________<br>Lcda. Maryoris Contreras<br>Analista Encargada</td><td>REVISADO POR:<br><br>____________<br>Lcda. Ruth Silva<br>Coord. Gestion Humana</td><td>APROBADO POR:<br><br>____________<br>Abg. Luis Sequera<br>Gerente Gestion Adm.</td></tr></table></body></html>';
+      descargarWord(html,'Resumen_Comensales_Choco_'+C.mes+'.doc');
+    }
+  });
+}
+
+function descargarWord(html,nombre){
+  const blob=new Blob(['\ufeff',html],{type:'application/msword'});
+  const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=nombre;a.click();URL.revokeObjectURL(url);
+}
+
+// ===== SOLICITUD DE PEDIDO (SORPE) =====
+function genSorpe(fmt){
+  const C=window.__CIERRE;if(!C){alert('Primero abre el cierre.');return;}
+  db.ref('config/logo').get().then(snap=>{
+    const logo=snap.exists()?snap.val():null;
+    const mesTxt=mesNombre(C.mes);
+    const items=[
+      ['001','SUMINISTRO DE COMIDAS DESAYUNOS PLANTA CHOCO',C.totCH.Desayuno],
+      ['002','SUMINISTRO DE COMIDAS ALMUERZOS PLANTA CHOCO',C.totCH.Almuerzo],
+      ['003','SUMINISTRO DE COMIDA CENAS PLANTA CHOCO',C.totCH.Cena],
+      ['004','SUMINISTRO DE COMIDAS DESAYUNOS MINA ISIDORA',C.isi.Desayuno||0],
+      ['005','SUMINISTRO DE COMIDAS ALMUERZOS MINA ISIDORA',C.isi.Almuerzo||0],
+      ['006','SUMINISTRO DE COMIDAS CENAS MINA ISIDORA',C.isi.Cena||0],
+      ['007','MERIENDA NOCTURNA (SERVIDOS EN MINA)',C.merienda]
+    ];
+    if(fmt==='pdf'){
+      const {jsPDF}=window.jspdf;const doc=new jsPDF();
+      let y=15;
+      if(logo){try{doc.addImage(logo,'PNG',15,8,180,25);y=38;}catch(e){}}
+      doc.setFontSize(13);doc.setFont(undefined,'bold');
+      doc.text('SOLICITUD DE PEDIDO - PIM III PLANTA CHOCO-CVM',105,y,{align:'center'});y+=7;
+      doc.setFontSize(10);doc.setFont(undefined,'normal');
+      doc.text('Departamento Solicitante: COORDINACION DE GESTION HUMANA',15,y);y+=5;
+      doc.text('Servicio de comida para el personal del PIM III Planta Choco-Isidora',15,y);y+=6;
+      doc.autoTable({
+        startY:y,
+        head:[['Item','Descripcion del Servicio','Cantidad','U.M.']],
+        body:items.map(i=>[i[0],i[1],i[2],'und']),
+        theme:'grid',headStyles:{fillColor:[68,114,196]}
+      });
+      let fy=doc.lastAutoTable.finalY+6;
+      doc.setFontSize(9);
+      doc.text('Correspondiente al periodo del mes de '+mesTxt,15,fy);fy+=6;
+      doc.text('OBSERVACION: Solicitudes autorizadas por cada gerencia y/o coordinacion del PIM III Planta Choco-Isidora',15,fy,{maxWidth:180});fy+=20;
+      doc.text('USUARIO SOLICITANTE',15,fy);doc.text('GERENTE DEL AREA',80,fy);doc.text('AUTORIZADO POR',145,fy);fy+=12;
+      doc.text('Ruth Silva',15,fy);doc.text('Luis Sequera',80,fy);doc.text('__________',145,fy);
+      doc.save('Solicitud_Pedido_'+C.mes+'.pdf');
+    }else{
+      let filas='';items.forEach(i=>{filas+='<tr><td>'+i[0]+'</td><td>'+i[1]+'</td><td style="text-align:center;">'+i[2]+'</td><td style="text-align:center;">und</td></tr>';});
+      const logoHtml=logo?'<div style="text-align:center;"><img src="'+logo+'" style="max-width:600px;"></div>':'';
+      const html='<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8"></head><body>'+logoHtml+
+        '<h3 style="text-align:center;">SOLICITUD DE PEDIDO - PIM III PLANTA CHOCO-CVM</h3>'+
+        '<p><b>Departamento Solicitante:</b> COORDINACION DE GESTION HUMANA<br><b>Justificacion:</b> Servicio de comida para el personal del PIM III Planta Choco-Isidora</p>'+
+        '<table border="1" cellspacing="0" cellpadding="4" style="border-collapse:collapse;width:100%;"><tr style="background:#4472C4;color:#fff;"><th>Item</th><th>Descripcion del Servicio</th><th>Cantidad</th><th>U.M.</th></tr>'+filas+'</table>'+
+        '<p>Correspondiente al periodo del mes de '+mesTxt+'</p>'+
+        '<p><b>OBSERVACION:</b> Solicitudes autorizadas por cada gerencia y/o coordinacion del PIM III Planta Choco-Isidora</p>'+
+        '<br><table width="100%"><tr><td>USUARIO SOLICITANTE<br><br>________<br>Ruth Silva</td><td>GERENTE DEL AREA<br><br>________<br>Luis Sequera</td><td>AUTORIZADO POR<br><br>________</td></tr></table></body></html>';
+      descargarWord(html,'Solicitud_Pedido_'+C.mes+'.doc');
+    }
+  });
+}
+
+// ===== LOS 2 MEMOS =====
+function genMemos(fmt){
+  const C=window.__CIERRE;if(!C){alert('Primero abre el cierre.');return;}
+  db.ref('config/logo').get().then(snap=>{
+    const logo=snap.exists()?snap.val():null;
+    const mesTxt=mesNombre(C.mes);
+    const logoHtml=logo?'<div style="text-align:center;"><img src="'+logo+'" style="max-width:600px;"></div>':'';
+    const memo1='<div style="page-break-after:always;">'+logoHtml+
+      '<h3 style="text-align:center;">MEMORANDO</h3>'+
+      '<p><b>Para:</b> ABG. LUIS SEQUERA<br>GERENTE DE GESTION ADMINISTRATIVA PLANTA CHOCO-ISIDORA<br>'+
+      '<b>De:</b> LICDA. RUTH SILVA<br>COORDINADORA DE GESTION HUMANA DEL PARQUE INDUSTRIAL MINERO III CHOCO-ISIDORA (E)<br>'+
+      '<b>Fecha:</b> ____________<br>'+
+      '<b>Asunto:</b> NOTIFICACION DE REQUERIMIENTO DE COMIDA DEL PIM III CHOCO-ISIDORA MES '+mesTxt+'</p>'+
+      '<p>Ante todo, reciba un cordial saludo Revolucionario, Bolivariano y profundamente Chavista, extensivo a todo su equipo de trabajo. Sirva el presente para notificar, requerimiento del suministro de comida del PIM III CVM CHOCO-ISIDORA, correspondiente al mes de '+mesTxt+', el cual beneficia a todo el personal gerencial, administrativo, obrero, y personal de paradas de molino de sag, que laboran en la Corporacion, de acuerdo al requerimiento de solicitudes autorizadas por cada Gerencia y Coordinaciones. Lo anterior, cumpliendo en lo establecido con la normativa de la ley de alimentacion para los trabajadores y trabajadoras en el Art N 4.</p>'+
+      '<p>Cabe destacar que los servicios que se le prestan por medio del comedor del PIM III planta choco a las contratas e igualmente cuerpos de seguridad, que brindan resguardo y proteccion a todas las areas de la instalacion, y demas eventualidades, son autorizadas por la Gerencia General y la Gerencia de Gestion Administrativa. Se anexa resumen de comensales del PIM III Planta Choco-Isidora.</p>'+
+      '<p>Sin mas a que hacer referencia, agradeciendo de antemano su valiosa atencion al respecto, se despide de usted.</p>'+
+      '<p style="text-align:center;">Atentamente,<br><br>________________<br><b>LICDA. RUTH SILVA</b><br>Coordinacion de Gestion Humana (E)<br>Corporacion Venezolana de Mineria, S.A.</p></div>';
+    const memo2=logoHtml+
+      '<h3 style="text-align:center;">EXPOSICION DE MOTIVO</h3>'+
+      '<p><b>Para:</b> LCDO. RONALD ALEXIS SOSA MARRON<br>GERENTE DE ADMINISTRACION Y FINANZAS CVM CARACAS.<br>'+
+      '<b>De:</b> ABG. LUIS SEQUERA<br>GERENTE DE GESTION ADMINISTRATIVA PLANTA CHOCO-ISIDORA<br>'+
+      '<b>Fecha:</b> ____________<br>'+
+      '<b>Asunto:</b> SERVICIO DE COMIDA DEL PIM III CHOCO-ISIDORA MES DE '+mesTxt+'.</p>'+
+      '<p>Ante todo, reciba un cordial saludo Revolucionario, Bolivariano y profundamente Chavista, extensivo a todo su equipo de trabajo que le acompana en su prestigiosa gestion y a su vez comunicarle la notificacion de SERVICIO DE COMEDOR DE DESAYUNOS, ALMUERZOS, CENAS, MERIENDAS NOCTURNAS PARA EL PERSONAL DE SERVICIOS DE MINA Y SERVICIOS DE COMIDA PARA PARADA MAYOR DEL MOLINO SAG del mes de '+mesTxt+', en pro de los trabajadores del PIM III PLANTA CHOCO-ISIDORA, mejorando el bienestar y productividad de los trabajadores, creando condiciones necesarias para un mejor rendimiento laboral en las diferentes areas y turnos del complejo minero, contratas y cuerpos de seguridad.</p>'+
+      '<p>Cabe destacar, la importancia de contar con los servicios antes mencionados en beneficios del personal de las diferentes areas y turnos del PIM III PLANTA CHOCO-ISIDORA, los cuales son indispensables para la continuidad de las labores; requerimiento que garantizara el rendimiento laboral y por consecuencia el cumplimiento de las metas establecidas de la Corporacion Venezolana de Mineria.</p>'+
+      '<p>Sin mas a que hacer referencia, agradeciendo de antemano su valiosa atencion al respecto, se despide de usted.</p>'+
+      '<p style="text-align:center;">Atentamente,<br><br>________________<br><b>ABG. LUIS SEQUERA</b><br>Gerencia de Gestion Administrativa<br>Corporacion Venezolana de Mineria, S.A.</p>';
+
+    const html='<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8"></head><body>'+memo1+memo2+'</body></html>';
+    if(fmt==='pdf'){
+      // Para PDF, abrimos ventana imprimible (mas fiable que html2canvas para texto largo)
+      const w=window.open('','_blank');
+      w.document.write('<html><head><title>Memos '+C.mes+'</title></head><body>'+memo1+memo2+'<script>window.onload=function(){window.print();}<\/script></body></html>');
+      w.document.close();
+    }else{
+      descargarWord(html,'Memos_'+C.mes+'.doc');
+    }
+  });
+}
+
+function guardarIsidora(mes){
+  const catsIsi=['Personal PIM III Mina Isidora','Personal CVM','Eventual','GPAMO','DGCIM'];
+  const desglose={};let tot={Desayuno:0,Almuerzo:0,Cena:0};
+  catsIsi.forEach(c=>{
+    const id=c.replace(/[^A-Za-z]/g,'');
+    const d=parseInt((document.getElementById('isi-'+id+'-d')||{}).value)||0;
+    const a=parseInt((document.getElementById('isi-'+id+'-a')||{}).value)||0;
+    const ce=parseInt((document.getElementById('isi-'+id+'-c')||{}).value)||0;
+    desglose[c]={Desayuno:d,Almuerzo:a,Cena:ce};
+    tot.Desayuno+=d;tot.Almuerzo+=a;tot.Cena+=ce;
+  });
+  const guardar=(scan)=>{
+    const obj={isidora:tot,isidoraDesglose:desglose};if(scan)obj.isidoraEscaner=scan;
+    db.ref('cierre-extra/'+mes).update(obj).then(()=>{alert('Resumen de Isidora guardado.');renderCierre();}).catch(e=>alert('Error: '+e.message));
+  };
+  const f=document.getElementById('ex-isi-scan');
+  if(f&&f.files[0]){
+    const file=f.files[0];const r=new FileReader();
+    r.onload=()=>guardar({tipo:file.type==='application/pdf'?'pdf':'img',data:r.result,nombre:file.name});
+    r.readAsDataURL(file);
+  }else{guardar(null);}
 }
 // ---------- PERSONAL: INGRESOS Y EGRESOS (solo RRHH) ----------
 let PERSONAL_FILTRO_GRUPO='';
