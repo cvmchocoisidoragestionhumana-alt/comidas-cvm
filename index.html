@@ -505,10 +505,14 @@ function renderContratasExternas(){
   if(!cont)return;
   if(GRUPO!=='GESTION ADMINISTRATIVA'){cont.innerHTML='';return;}
   if(!CONTRATAS_FECHA)CONTRATAS_FECHA=today;
-  // Leer datos guardados de la fecha seleccionada
-  db.ref('contratas_dia/'+CONTRATAS_FECHA).get().then(snap=>{
-    const guardado=snap.val()||{};
-    // Rellenar CONTRATAS con lo guardado
+  // Primero cargar los nombres de contratas desde Firebase
+  db.ref('config/contratas').get().then(snapN=>{
+    if(snapN.exists()){CONTRATAS_NOMBRES=snapN.val();}
+    else{CONTRATAS_NOMBRES=['Ferreobras','Serviplot'];}
+  // Luego leer datos guardados de la fecha seleccionada
+  return db.ref('contratas_dia/'+CONTRATAS_FECHA).get();
+  }).then(snap=>{
+    const guardado=(snap&&snap.val())||{};
     CONTRATAS=[];
     (CONTRATAS_NOMBRES||[]).forEach(n=>{
       const g=guardado[n]||{Desayuno:0,Almuerzo:0,Cena:0};
@@ -517,23 +521,72 @@ function renderContratasExternas(){
     let html='<div class="card" style="background:var(--azulbg);">';
     html+='<h2 style="color:var(--azul);">Contratas externas</h2>';
     html+='<div class="muted" style="margin-bottom:8px;">Administra tus contratas y carga las comidas del d&iacute;a. Estas no est&aacute;n en n&oacute;mina.</div>';
-    // Selector de fecha
     html+='<div style="margin-bottom:10px;"><label><b>Fecha:</b> </label><input type="date" id="contratas-fecha" value="'+CONTRATAS_FECHA+'" onchange="onContratasFecha()" style="padding:6px;"></div>';
-    // Lista de nombres
     html+='<div style="padding:8px;background:#fff;border-radius:6px;margin-bottom:10px;">';
     html+='<b style="font-size:13px;">Mis contratas registradas</b>';
     html+='<div id="contratas-nombres" style="margin-top:6px;"></div>';
     html+='<div style="display:flex;gap:6px;margin-top:6px;"><input type="text" id="nueva-contrata" placeholder="Nombre de nueva contrata" style="flex:1;padding:6px;"><button class="act prim" onclick="agregarNombreContrata()">Agregar contrata</button></div>';
     html+='</div>';
-    // Tabla de comidas
     html+='<div id="contratas-lista"></div>';
-    // Botón guardar
     html+='<div style="margin-top:10px;"><button class="act prim" onclick="guardarContratasDia()">Guardar contratas del '+CONTRATAS_FECHA+'</button></div>';
+    // Resumen mensual acumulado
+    html+='<div id="contratas-resumen-mes" style="margin-top:14px;"></div>';
     html+='</div>';
     cont.innerHTML=html;
     pintarNombresContratas();
     pintarContratas();
+    cargarResumenContratasMes();
   }).catch(e=>{cont.innerHTML='<div class="card"><div class="note danger">Error: '+e.message+'</div></div>';});
+}
+function cargarResumenContratasMes(){
+  const cont=document.getElementById('contratas-resumen-mes');
+  if(!cont)return;
+  const mes=CONTRATAS_FECHA.slice(0,7);
+  cont.innerHTML='<div class="muted">Cargando resumen del mes...</div>';
+  db.ref('contratas_dia').get().then(snap=>{
+    const all=snap.val()||{};
+    const totales={};  // nombre -> {Desayuno, Almuerzo, Cena}
+    const dias=[];     // [{fecha, contratas}]
+    Object.keys(all).sort().forEach(fecha=>{
+      if(!fecha.startsWith(mes))return;
+      const dia=all[fecha];
+      const diaData={};
+      Object.keys(dia).forEach(n=>{
+        if(n.startsWith('_'))return;
+        const ct=dia[n];
+        totales[n]=totales[n]||{Desayuno:0,Almuerzo:0,Cena:0};
+        totales[n].Desayuno+=(ct.Desayuno||0);
+        totales[n].Almuerzo+=(ct.Almuerzo||0);
+        totales[n].Cena+=(ct.Cena||0);
+        diaData[n]=ct;
+      });
+      if(Object.keys(diaData).length>0)dias.push({fecha,data:diaData});
+    });
+    const noms=Object.keys(totales);
+    if(noms.length===0){cont.innerHTML='<div class="muted">No hay contratas cargadas en '+mes+'.</div>';return;}
+    let html='<b style="font-size:14px;color:var(--azul);">Resumen mensual de contratas &mdash; '+mes+'</b>';
+    html+='<div class="tablewrap" style="margin-top:6px;"><table><thead><tr><th>Contrata</th><th>Desayuno</th><th>Almuerzo</th><th>Cena</th><th>Total comidas</th></tr></thead><tbody>';
+    let grandT={D:0,A:0,C:0};
+    noms.forEach(n=>{
+      const t=totales[n];
+      const sum=t.Desayuno+t.Almuerzo+t.Cena;
+      html+='<tr><td><b>'+n+'</b></td><td>'+t.Desayuno+'</td><td>'+t.Almuerzo+'</td><td>'+t.Cena+'</td><td><b>'+sum+'</b></td></tr>';
+      grandT.D+=t.Desayuno;grandT.A+=t.Almuerzo;grandT.C+=t.Cena;
+    });
+    html+='<tr style="background:var(--azulbg);font-weight:bold;"><td>TOTAL MES</td><td>'+grandT.D+'</td><td>'+grandT.A+'</td><td>'+grandT.C+'</td><td>'+(grandT.D+grandT.A+grandT.C)+'</td></tr>';
+    html+='</tbody></table></div>';
+    // Detalle por día
+    html+='<details style="margin-top:8px;"><summary style="cursor:pointer;color:var(--azul);font-size:13px;font-weight:bold;">Ver detalle por d&iacute;a ('+dias.length+' d&iacute;as cargados)</summary>';
+    html+='<div class="tablewrap" style="margin-top:6px;"><table><thead><tr><th>Fecha</th><th>Contrata</th><th>Des</th><th>Alm</th><th>Cena</th></tr></thead><tbody>';
+    dias.forEach(d=>{
+      Object.keys(d.data).forEach(n=>{
+        const ct=d.data[n];
+        html+='<tr><td>'+d.fecha+'</td><td>'+n+'</td><td>'+(ct.Desayuno||0)+'</td><td>'+(ct.Almuerzo||0)+'</td><td>'+(ct.Cena||0)+'</td></tr>';
+      });
+    });
+    html+='</tbody></table></div></details>';
+    cont.innerHTML=html;
+  }).catch(e=>{cont.innerHTML='<div class="note danger">Error: '+e.message+'</div>';});
 }
 function onContratasFecha(){
   const e=document.getElementById('contratas-fecha');
