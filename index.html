@@ -1287,6 +1287,17 @@ function consolidarDia(fecha,cb){
       const eventuales=cd.eventuales||{Desayuno:0,Almuerzo:0,Cena:0};
       const seguridad=cd.seguridad||{};
       const merienda=cd.merienda||0;
+      // leer contratas externas del nodo contratas_dia (cargadas por Gestión Administrativa)
+      db.ref('contratas_dia/'+fecha).get().then(ctSnap=>{
+        const ctData=ctSnap.val()||{};
+        Object.keys(ctData).forEach(n=>{
+          if(n.startsWith('_'))return; // ignorar campos internos (_guardado, _porUsuario)
+          const ct=ctData[n];
+          contratas[n]=contratas[n]||{Desayuno:0,Almuerzo:0,Cena:0};
+          contratas[n].Desayuno+=(ct.Desayuno||0);
+          contratas[n].Almuerzo+=(ct.Almuerzo||0);
+          contratas[n].Cena+=(ct.Cena||0);
+        });
       // subtotal bloque 1 (personal + parada + contratas + eventuales)
       const sub1={Desayuno:personal.Desayuno+parada.Desayuno+eventuales.Desayuno,Almuerzo:personal.Almuerzo+parada.Almuerzo+eventuales.Almuerzo,Cena:personal.Cena+parada.Cena+eventuales.Cena};
       Object.keys(contratas).forEach(n=>{sub1.Desayuno+=contratas[n].Desayuno;sub1.Almuerzo+=contratas[n].Almuerzo;sub1.Cena+=contratas[n].Cena;});
@@ -1294,8 +1305,9 @@ function consolidarDia(fecha,cb){
       Object.keys(seguridad).forEach(n=>{sub2.Desayuno+=seguridad[n].Desayuno;sub2.Almuerzo+=seguridad[n].Almuerzo;sub2.Cena+=seguridad[n].Cena;});
       const total={Desayuno:sub1.Desayuno+sub2.Desayuno,Almuerzo:sub1.Almuerzo+sub2.Almuerzo,Cena:sub1.Cena+sub2.Cena};
       cb({personal,parada,contratas,eventuales,seguridad,merienda,sub1,sub2,total});
-    });
-  });
+    }); // fin contratas_dia
+    }); // fin cargadiaria
+  }); // fin solicitudes
 }
 
 // genera el formato diario en Word o Excel
