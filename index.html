@@ -361,8 +361,6 @@ function fechaManana(){const d=new Date();d.setDate(d.getDate()+1);return d.toIS
 function fechaBonita(f){const p=f.split('-');return p[2]+'/'+p[1]+'/'+p[0];}
 // normaliza cedula: quita puntos, espacios, guiones y ceros a la izquierda, para comparar bien
 function normCed(c){return String(c==null?'':c).replace(/[.\s\-]/g,'').replace(/^0+/,'');}
-// Firebase no permite . # $ [ ] en las rutas. Limpiamos el nombre de la gerencia
-// para usarlo como clave, sin perder el nombre real (que se guarda en el campo "gerencia").
 function claveSegura(s){return String(s==null?'':s).replace(/[.#$\[\]\/]/g,'_').trim();}
 
 function renderSolicitante(){
@@ -390,11 +388,13 @@ function renderSolicitante(){
   html+='<div id="paso2" style="margin-top:16px;"></div>';
   html+='<div id="mis-solicitudes" style="margin-top:20px;"></div>';
   html+='<div id="cancelaciones-sec" style="margin-top:20px;"></div>';
+  html+='<div id="contratas-ext-sec" style="margin-top:20px;"></div>';
   v.innerHTML=html;
   if(!SOL_FECHA)SOL_FECHA=fechaManana();
   if(ESCANER_DATA){mostrarPreview();pintarPaso2();}
   renderMisSolicitudes();
   renderCancelaciones();
+  renderContratasExternas();
 }
 
 // Resumen de lo que la gerencia ha pedido (para que el solicitante vea sus totales)
@@ -499,6 +499,24 @@ function reportarCancelacion(){
     .catch(e=>alert('Error: '+e.message));
 }
 
+function renderContratasExternas(){
+  const cont=document.getElementById('contratas-ext-sec');
+  if(!cont)return;
+  if(GRUPO!=='GESTION ADMINISTRATIVA'){cont.innerHTML='';return;}
+  let html='<div class="card" style="background:var(--azulbg);">';
+  html+='<h2 style="color:var(--azul);">Contratas externas</h2>';
+  html+='<div class="muted" style="margin-bottom:8px;">Administra tus contratas (agregar, cambiar nombre o eliminar) y carga las comidas del d&iacute;a. Estas no est&aacute;n en n&oacute;mina.</div>';
+  html+='<div style="padding:8px;background:#fff;border-radius:6px;margin-bottom:10px;">';
+  html+='<b style="font-size:13px;">Mis contratas registradas</b>';
+  html+='<div id="contratas-nombres" style="margin-top:6px;"></div>';
+  html+='<div style="display:flex;gap:6px;margin-top:6px;"><input type="text" id="nueva-contrata" placeholder="Nombre de nueva contrata" style="flex:1;padding:6px;"><button class="act prim" onclick="agregarNombreContrata()">Agregar contrata</button></div>';
+  html+='</div>';
+  html+='<div id="contratas-lista"></div>';
+  html+='</div>';
+  cont.innerHTML=html;
+  cargarNombresContratas();pintarContratas();
+}
+
 function pintarPaso2(){
   const cont=document.getElementById('paso2');
   if(!cont)return;
@@ -529,24 +547,8 @@ function pintarPaso2(){
   html+='<div style="margin-top:10px;"><button class="act prim" onclick="validarTodas()">Validar planilla</button> <button class="act" onclick="limpiarTodas()">Limpiar c&eacute;dulas</button></div>';
   html+='<div id="val-resultado" style="margin-top:14px;"></div>';
   html+='</div>';
-  // SECCION EXTRA: contratas externas (solo Gestion Administrativa)
-  if(GRUPO==='GESTION ADMINISTRATIVA'){
-    html+='<div style="margin-top:14px;padding:12px;border:1px solid var(--borde);border-radius:8px;background:var(--azulbg);">';
-    html+='<h3 style="margin:0 0 6px;color:var(--azul);">Contratas externas</h3>';
-    html+='<div class="muted" style="margin-bottom:8px;">Administra tus contratas (agregar, cambiar nombre o eliminar) y carga las comidas del d&iacute;a. Estas no est&aacute;n en n&oacute;mina.</div>';
-    // administrar lista de nombres
-    html+='<div style="padding:8px;background:#fff;border-radius:6px;margin-bottom:10px;">';
-    html+='<b style="font-size:13px;">Mis contratas registradas</b>';
-    html+='<div id="contratas-nombres" style="margin-top:6px;"></div>';
-    html+='<div style="display:flex;gap:6px;margin-top:6px;"><input type="text" id="nueva-contrata" placeholder="Nombre de nueva contrata" style="flex:1;padding:6px;"><button class="act prim" onclick="agregarNombreContrata()">Agregar contrata</button></div>';
-    html+='</div>';
-    // cargar comidas del dia por contrata
-    html+='<div id="contratas-lista"></div>';
-    html+='</div>';
-  }
   cont.innerHTML=html;
   if(VAL.Desayuno||VAL.Almuerzo||VAL.Cena)pintarResultado();
-  if(GRUPO==='GESTION ADMINISTRATIVA'){cargarNombresContratas();pintarContratas();}
 }
 
 // ===== Contratas externas (Gestion Administrativa) =====
