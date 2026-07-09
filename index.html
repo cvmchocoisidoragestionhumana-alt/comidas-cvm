@@ -499,22 +499,59 @@ function reportarCancelacion(){
     .catch(e=>alert('Error: '+e.message));
 }
 
+let CONTRATAS_FECHA=null;
 function renderContratasExternas(){
   const cont=document.getElementById('contratas-ext-sec');
   if(!cont)return;
   if(GRUPO!=='GESTION ADMINISTRATIVA'){cont.innerHTML='';return;}
-  let html='<div class="card" style="background:var(--azulbg);">';
-  html+='<h2 style="color:var(--azul);">Contratas externas</h2>';
-  html+='<div class="muted" style="margin-bottom:8px;">Administra tus contratas (agregar, cambiar nombre o eliminar) y carga las comidas del d&iacute;a. Estas no est&aacute;n en n&oacute;mina.</div>';
-  html+='<div style="padding:8px;background:#fff;border-radius:6px;margin-bottom:10px;">';
-  html+='<b style="font-size:13px;">Mis contratas registradas</b>';
-  html+='<div id="contratas-nombres" style="margin-top:6px;"></div>';
-  html+='<div style="display:flex;gap:6px;margin-top:6px;"><input type="text" id="nueva-contrata" placeholder="Nombre de nueva contrata" style="flex:1;padding:6px;"><button class="act prim" onclick="agregarNombreContrata()">Agregar contrata</button></div>';
-  html+='</div>';
-  html+='<div id="contratas-lista"></div>';
-  html+='</div>';
-  cont.innerHTML=html;
-  cargarNombresContratas();pintarContratas();
+  if(!CONTRATAS_FECHA)CONTRATAS_FECHA=today;
+  // Leer datos guardados de la fecha seleccionada
+  db.ref('contratas_dia/'+CONTRATAS_FECHA).get().then(snap=>{
+    const guardado=snap.val()||{};
+    // Rellenar CONTRATAS con lo guardado
+    CONTRATAS=[];
+    (CONTRATAS_NOMBRES||[]).forEach(n=>{
+      const g=guardado[n]||{Desayuno:0,Almuerzo:0,Cena:0};
+      CONTRATAS.push({nom:n,Desayuno:g.Desayuno||0,Almuerzo:g.Almuerzo||0,Cena:g.Cena||0});
+    });
+    let html='<div class="card" style="background:var(--azulbg);">';
+    html+='<h2 style="color:var(--azul);">Contratas externas</h2>';
+    html+='<div class="muted" style="margin-bottom:8px;">Administra tus contratas y carga las comidas del d&iacute;a. Estas no est&aacute;n en n&oacute;mina.</div>';
+    // Selector de fecha
+    html+='<div style="margin-bottom:10px;"><label><b>Fecha:</b> </label><input type="date" id="contratas-fecha" value="'+CONTRATAS_FECHA+'" onchange="onContratasFecha()" style="padding:6px;"></div>';
+    // Lista de nombres
+    html+='<div style="padding:8px;background:#fff;border-radius:6px;margin-bottom:10px;">';
+    html+='<b style="font-size:13px;">Mis contratas registradas</b>';
+    html+='<div id="contratas-nombres" style="margin-top:6px;"></div>';
+    html+='<div style="display:flex;gap:6px;margin-top:6px;"><input type="text" id="nueva-contrata" placeholder="Nombre de nueva contrata" style="flex:1;padding:6px;"><button class="act prim" onclick="agregarNombreContrata()">Agregar contrata</button></div>';
+    html+='</div>';
+    // Tabla de comidas
+    html+='<div id="contratas-lista"></div>';
+    // Botón guardar
+    html+='<div style="margin-top:10px;"><button class="act prim" onclick="guardarContratasDia()">Guardar contratas del '+CONTRATAS_FECHA+'</button></div>';
+    html+='</div>';
+    cont.innerHTML=html;
+    pintarNombresContratas();
+    pintarContratas();
+  }).catch(e=>{cont.innerHTML='<div class="card"><div class="note danger">Error: '+e.message+'</div></div>';});
+}
+function onContratasFecha(){
+  const e=document.getElementById('contratas-fecha');
+  if(e)CONTRATAS_FECHA=e.value;
+  renderContratasExternas();
+}
+function guardarContratasDia(){
+  const data={};
+  CONTRATAS.forEach(c=>{
+    if(c.Desayuno+c.Almuerzo+c.Cena>0){
+      data[c.nom]={Desayuno:c.Desayuno,Almuerzo:c.Almuerzo,Cena:c.Cena};
+    }
+  });
+  data._guardado=new Date().toISOString();
+  data._porUsuario=(auth.currentUser?auth.currentUser.email:'');
+  db.ref('contratas_dia/'+CONTRATAS_FECHA).set(data)
+    .then(()=>alert('Contratas del '+CONTRATAS_FECHA+' guardadas.'))
+    .catch(e=>alert('Error: '+e.message));
 }
 
 function pintarPaso2(){
