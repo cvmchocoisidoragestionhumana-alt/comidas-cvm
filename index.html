@@ -1228,10 +1228,35 @@ function renderCargaDiaria(){
     html+='<input type="text" id="cd-seg-nom" placeholder="Nombre (DGCIM...)"><input type="number" id="cd-seg-d" placeholder="Des" value="0"><input type="number" id="cd-seg-a" placeholder="Alm" value="0"><input type="number" id="cd-seg-c" placeholder="Cena" value="0"><button class="act prim" onclick="cdAgregarSeg()">Agregar</button></div></div>';
     html+='</div>';
     html+='<div style="margin-top:12px;"><button class="act prim" onclick="guardarCargaDiaria()">Guardar carga del '+CD_FECHA+'</button></div>';
+    // Contratas externas cargadas por Gestión Administrativa (solo lectura + eliminar)
+    html+='<div id="cd-contratas-ext" style="margin-top:14px;"></div>';
     html+='</div>';
     v.innerHTML=html;
     cdPintarSeg();
+    cdPintarContratasExt();
   }).catch(e=>{v.innerHTML='<div class="card"><div class="note danger">Error: '+e.message+'</div></div>';});
+}
+function cdPintarContratasExt(){
+  const cont=document.getElementById('cd-contratas-ext');
+  if(!cont)return;
+  db.ref('contratas_dia/'+CD_FECHA).get().then(snap=>{
+    const data=snap.val()||{};
+    const noms=Object.keys(data).filter(n=>!n.startsWith('_'));
+    if(noms.length===0){cont.innerHTML='<div style="padding:10px;border:1px solid var(--borde);border-radius:8px;background:#fafbfc;"><b>Contratas externas</b><div class="muted" style="margin-top:4px;">Sin contratas cargadas para '+CD_FECHA+' (las carga Gesti&oacute;n Administrativa).</div></div>';return;}
+    let html='<div style="padding:10px;border:1px solid var(--borde);border-radius:8px;background:#fafbfc;">';
+    html+='<b>Contratas externas del '+CD_FECHA+'</b> <span class="muted" style="font-size:12px;">(cargadas por Gesti&oacute;n Administrativa)</span>';
+    html+='<div class="tablewrap" style="margin-top:6px;"><table><thead><tr><th>Contrata</th><th>Des</th><th>Alm</th><th>Cena</th><th></th></tr></thead><tbody>';
+    noms.forEach(n=>{
+      const ct=data[n];
+      html+='<tr><td>'+n+'</td><td>'+(ct.Desayuno||0)+'</td><td>'+(ct.Almuerzo||0)+'</td><td>'+(ct.Cena||0)+'</td><td><button class="act" style="padding:2px 8px;font-size:11px;background:var(--rojo);color:#fff;" onclick="cdEliminarContrata(\''+n.replace(/'/g,"")+'\')">Eliminar</button></td></tr>';
+    });
+    html+='</tbody></table></div></div>';
+    cont.innerHTML=html;
+  });
+}
+function cdEliminarContrata(nom){
+  if(!confirm('Eliminar la carga de "'+nom+'" del '+CD_FECHA+'? Gestión Administrativa podrá cargarla de nuevo.'))return;
+  db.ref('contratas_dia/'+CD_FECHA+'/'+nom).remove().then(()=>{alert(nom+' eliminada del '+CD_FECHA);cdPintarContratasExt();}).catch(e=>alert('Error: '+e.message));
 }
 function onCDFecha(){const e=document.getElementById('cd-fecha');if(e)CD_FECHA=e.value;renderCargaDiaria();}
 function cdPintarSeg(){
