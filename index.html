@@ -361,6 +361,9 @@ function fechaManana(){const d=new Date();d.setDate(d.getDate()+1);return d.toIS
 function fechaBonita(f){const p=f.split('-');return p[2]+'/'+p[1]+'/'+p[0];}
 // normaliza cedula: quita puntos, espacios, guiones y ceros a la izquierda, para comparar bien
 function normCed(c){return String(c==null?'':c).replace(/[.\s\-]/g,'').replace(/^0+/,'');}
+// Firebase no permite . # $ [ ] en las rutas. Limpiamos el nombre de la gerencia
+// para usarlo como clave, sin perder el nombre real (que se guarda en el campo "gerencia").
+function claveSegura(s){return String(s==null?'':s).replace(/[.#$\[\]\/]/g,'_').trim();}
 
 function renderSolicitante(){
   const v=document.getElementById('view-auth');
@@ -442,7 +445,7 @@ function renderCancelaciones(){
   const cont=document.getElementById('cancelaciones-sec');
   if(!cont)return;
   const hoy=today;
-  const claveGer=GRUPO;
+  const claveGer=claveSegura(GRUPO);
   cont.innerHTML='<div class="card"><h2>Cancelar comidas de hoy</h2><div class="muted">Cargando...</div></div>';
   db.ref('solicitudes/'+hoy+'/'+claveGer).get().then(snap=>{
     const enVentana=enVentanaCancelacion();
@@ -486,7 +489,7 @@ function reportarCancelacion(){
   const persona=NOMINA.find(p=>normCed(p.ced)===normCed(ced));
   if(!persona){alert('La cedula '+ced+' no existe en la nomina.');return;}
   if(persona.ger!==GRUPO){alert('La cedula '+ced+' es de '+persona.ger+', no de tu gerencia.');return;}
-  const hoy=today;const claveGer=GRUPO;
+  const hoy=today;const claveGer=claveSegura(GRUPO);
   const key='c_'+normCed(ced)+'_'+comida;
   const registro={ced:ced,nombre:persona.nom,comida:comida,obs:obs,
     reportadoPor:(auth.currentUser?auth.currentUser.email:''),
@@ -799,7 +802,7 @@ function enviarSolicitud(){
     escaner:ESCANER_DATA
   };
   // clave: si es parada de molino, se guarda con sufijo para no pisar la solicitud normal
-  const claveGer=(tipoPlanilla==='ParadaMolino'?GRUPO+'__ParadaMolino':GRUPO);
+  const claveGer=claveSegura(tipoPlanilla==='ParadaMolino'?GRUPO+'__ParadaMolino':GRUPO);
   const btn=(typeof event!=='undefined'&&event.target)?event.target:null;
   if(btn){btn.disabled=true;btn.textContent='Enviando...';}
   db.ref('solicitudes/'+SOL_FECHA+'/'+claveGer).set(registro)
@@ -1336,7 +1339,7 @@ function guardarManual(){
   const C=parseInt((document.getElementById('man-c')||{}).value)||0;
   if(!ger||!fecha){alert('Elige gerencia y fecha');return;}
   if(D+A+C===0){alert('Indica al menos una comida');return;}
-  const claveGer=(tipo==='ParadaMolino'?ger+'__ParadaMolino':ger);
+  const claveGer=claveSegura(tipo==='ParadaMolino'?ger+'__ParadaMolino':ger);
   const guardar=(scan)=>{
     const registro={
       gerencia:ger,fecha:fecha,tipoPlanilla:tipo,
