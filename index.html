@@ -1657,7 +1657,26 @@ function renderCierre(){
       db.ref('cierre-extra/'+mes).get().then(exSnap=>{
         const ex=exSnap.val()||{};
         if(ex.isidora)extra.isidora=ex.isidora;
-        pintarCierre(v,mes,cat,contratasDetalle,extra,desglose);
+        // leer contratas externas del nodo contratas_dia (cargadas por Gestión Administrativa)
+        db.ref('contratas_dia').get().then(ctSnap=>{
+          const ctAll=ctSnap.val()||{};
+          Object.keys(ctAll).forEach(fecha=>{
+            if(!fecha.startsWith(mes))return;
+            const dia=ctAll[fecha];
+            Object.keys(dia).forEach(nom=>{
+              if(nom.startsWith('_'))return;
+              const ct=dia[nom];
+              cat['Contratas externas'].Desayuno+=(ct.Desayuno||0);
+              cat['Contratas externas'].Almuerzo+=(ct.Almuerzo||0);
+              cat['Contratas externas'].Cena+=(ct.Cena||0);
+              contratasDetalle[nom]=contratasDetalle[nom]||{Desayuno:0,Almuerzo:0,Cena:0};
+              contratasDetalle[nom].Desayuno+=(ct.Desayuno||0);
+              contratasDetalle[nom].Almuerzo+=(ct.Almuerzo||0);
+              contratasDetalle[nom].Cena+=(ct.Cena||0);
+            });
+          });
+          pintarCierre(v,mes,cat,contratasDetalle,extra,desglose);
+        });
       });
     });
   }).catch(e=>{v.innerHTML='<div class="card"><div class="note danger">Error al consolidar: '+e.message+'</div></div>';});
