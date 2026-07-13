@@ -2280,7 +2280,7 @@ function renderCruceBiom(){
   html+='<div style="border:1px solid var(--azul);border-radius:8px;padding:14px;margin-bottom:12px;background:var(--azulbg);">';
   html+='<h3 style="margin:0 0 6px;color:var(--azul);font-size:14px;">Paso 1 \u2014 Sube las planillas escaneadas</h3>';
   html+='<div class="muted" style="margin-bottom:8px;">Sube las fotos o im\u00e1genes de las planillas de solicitud de comidas (JPG, PNG). El sistema leer\u00e1 las c\u00e9dulas autom\u00e1ticamente. Puede tardar unos segundos por imagen.</div>';
-  html+='<input type="file" id="cb-file-scan" accept="image/*" multiple onchange="cbIniciarOCR(this)">';
+  html+='<input type="file" id="cb-file-scan" accept="image/*,application/pdf" multiple onchange="cbIniciarOCR(this)">';
   html+='<div id="cb-ocr-progress" style="margin-top:10px;"></div>';
   html+='<div id="cb-ocr-result" style="margin-top:10px;"></div>';
   html+='</div>';
@@ -2309,8 +2309,45 @@ async function cbIniciarOCR(input){
   CB_OCR_RUNNING=true; CB_OCR_DONE=false; CB_CEDULAS_OCR=[]; CB_RESULT=null;
   const prog=document.getElementById('cb-ocr-progress');
   const res=document.getElementById('cb-ocr-result'); res.innerHTML='';
-  const tot=files.length;
-  prog.innerHTML='<div style="background:var(--azulbg);padding:12px;border-radius:8px;"><b>Leyendo planillas...</b> 0/'+tot+'<div id="cb-ocr-bar" style="background:#ddd;border-radius:4px;height:8px;margin-top:8px;"><div id="cb-ocr-fill" style="background:var(--azul);height:100%;border-radius:4px;width:0%;transition:width .3s;"></div></div><div id="cb-ocr-det" class="muted" style="margin-top:6px;"></div></div>';
+
+  // Primero convertir todos los archivos a imágenes (si es PDF, renderizar cada página)
+  prog.innerHTML='<div style="background:var(--azulbg);padding:12px;border-radius:8px;"><b>Preparando archivos...</b><div id="cb-ocr-det" class="muted" style="margin-top:6px;"></div></div>';
+
+  const imagenes=[]; // array de dataURL de cada página/imagen
+  for(let i=0;i<files.length;i++){
+    const file=files[i];
+    if(file.type==='application/pdf'){
+      // Renderizar cada página del PDF a imagen usando pdf.js
+      document.getElementById('cb-ocr-det').textContent='Convirtiendo PDF: '+file.name+'...';
+      try{
+        const arrayBuf=await file.arrayBuffer();
+        pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        const pdf=await pdfjsLib.getDocument({data:arrayBuf}).promise;
+        for(let p=1;p<=pdf.numPages;p++){
+          document.getElementById('cb-ocr-det').textContent='Convirtiendo PDF: '+file.name+' — página '+p+'/'+pdf.numPages+'...';
+          const page=await pdf.getPage(p);
+          const scale=2.0; // alta resolución para OCR
+          const viewport=page.getViewport({scale});
+          const canvas=document.createElement('canvas');
+          canvas.width=viewport.width; canvas.height=viewport.height;
+          await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;
+          imagenes.push({name:file.name+' p.'+p, data:canvas.toDataURL('image/png')});
+        }
+      }catch(e){console.warn('Error PDF:',file.name,e);}
+    }else{
+      // Imagen normal
+      const dataURL=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(file);});
+      imagenes.push({name:file.name, data:dataURL});
+    }
+  }
+
+  if(imagenes.length===0){
+    prog.innerHTML='<div class="note danger">No se pudo leer ningún archivo.</div>';
+    CB_OCR_RUNNING=false;return;
+  }
+
+  const tot=imagenes.length;
+  prog.innerHTML='<div style="background:var(--azulbg);padding:12px;border-radius:8px;"><b>Leyendo cédulas con OCR...</b> 0/'+tot+' páginas<div id="cb-ocr-bar" style="background:#ddd;border-radius:4px;height:8px;margin-top:8px;"><div id="cb-ocr-fill" style="background:var(--azul);height:100%;border-radius:4px;width:0%;transition:width .3s;"></div></div><div id="cb-ocr-det" class="muted" style="margin-top:6px;"></div></div>';
 
   const worker=await Tesseract.createWorker('spa',1,{
     workerPath:'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
@@ -2318,17 +2355,16 @@ async function cbIniciarOCR(input){
   });
   const todasCed=new Set();
   for(let i=0;i<tot;i++){
-    document.getElementById('cb-ocr-det').textContent='Procesando: '+files[i].name+' ('+(i+1)+'/'+tot+')...';
+    document.getElementById('cb-ocr-det').textContent='OCR: '+imagenes[i].name+' ('+(i+1)+'/'+tot+')...';
     document.getElementById('cb-ocr-fill').style.width=Math.round((i/tot)*100)+'%';
     try{
-      const imgData=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(files[i]);});
-      const {data}=await worker.recognize(imgData);
+      const {data}=await worker.recognize(imagenes[i].data);
       (data.text.match(/\b\d[\d.\s]{4,12}\d\b/g)||[]).forEach(m=>{
         const c=m.replace(/[.\s]/g,'').replace(/^0+/,'');
         if(c.length>=6&&c.length<=9&&/^\d+$/.test(c))todasCed.add(c);
       });
     }catch(e){console.warn('OCR error:',e);}
-    prog.querySelector('b').textContent='Leyendo planillas... '+(i+1)+'/'+tot;
+    prog.querySelector('b').textContent='Leyendo cédulas con OCR... '+(i+1)+'/'+tot+' páginas';
     document.getElementById('cb-ocr-fill').style.width=Math.round(((i+1)/tot)*100)+'%';
   }
   await worker.terminate();
@@ -2337,7 +2373,7 @@ async function cbIniciarOCR(input){
   const validas=[]; todasCed.forEach(c=>{if(nominaCeds.has(c))validas.push(c);});
   CB_CEDULAS_OCR=validas; CB_OCR_DONE=true; CB_OCR_RUNNING=false;
   const desc=todasCed.size-validas.length;
-  prog.innerHTML='<div style="background:var(--verdebg);padding:12px;border-radius:8px;color:var(--verde);"><b>Lectura completa.</b> '+tot+' imagen(es). '+todasCed.size+' n\u00fameros &rarr; <b>'+validas.length+' c\u00e9dulas v\u00e1lidas</b> (en n\u00f3mina)'+(desc>0?' | '+desc+' descartadas':'')+'</div>';
+  prog.innerHTML='<div style="background:var(--verdebg);padding:12px;border-radius:8px;color:var(--verde);"><b>Lectura completa.</b> '+tot+' página(s). '+todasCed.size+' números &rarr; <b>'+validas.length+' cédulas válidas</b> (en nómina)'+(desc>0?' | '+desc+' descartadas':'')+'</div>';
   cbMostrarCedulasExtraidas();
   const btn=document.getElementById('cb-btn-cruzar');
   if(btn&&CB_BIO)btn.disabled=false;
@@ -2361,28 +2397,51 @@ function cbCargarBio(input){
   reader.onload=function(e){
     try{
       const data=new Uint8Array(e.target.result);
-      const wb=XLSX.read(data,{type:'array',cellDates:true});
+      const wb=XLSX.read(data,{type:'array',cellDates:false});
       const ws=wb.Sheets[wb.SheetNames[0]];
-      const rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,dateNF:'dd/mm/yyyy hh:mm:ss'});
+      const rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:true});
       CB_BIO={};let parsed=0;
       rows.forEach(r=>{
         if(!r||r.length<3)return;
-        const ced=String(r[0]||'').replace(/\u00a0/g,'').replace(/[.\s\-]/g,'').replace(/^0+/,'').trim();
-        if(!ced||!/^\d+$/.test(ced))return;
-        const nom=String(r[1]||'').replace(/\u00a0/g,'').trim();
-        let ts=null;const raw2=r[2];
-        if(raw2 instanceof Date){ts=raw2;}
-        else{const s=String(raw2||'').trim();
+        const cedRaw=String(r[0]==null?'':r[0]).replace(/\u00a0/g,'').replace(/[.\s\-]/g,'').replace(/^0+/,'').trim();
+        if(!cedRaw||!/^\d+$/.test(cedRaw))return;
+        const nom=String(r[1]==null?'':r[1]).replace(/\u00a0/g,'').trim();
+        let ts=null;
+        const raw2=r[2];
+        // Si XLSX lo leyó como número serial de Excel (>40000 = fecha válida)
+        if(typeof raw2==='number'&&raw2>40000){
+          // convertir serial de Excel a Date
+          const d=new Date(Math.round((raw2-25569)*86400*1000));
+          if(!isNaN(d.getTime()))ts=d;
+        }
+        if(!ts&&raw2 instanceof Date){ts=raw2;}
+        if(!ts){
+          const s=String(raw2||'').trim();
+          // DD/MM/YYYY HH:MM:SS
           const m=s.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
           if(m)ts=new Date(+m[3],+m[2]-1,+m[1],+m[4],+m[5],+(m[6]||0));
-          else{const m2=s.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
-            if(m2)ts=new Date(+m2[1],+m2[2]-1,+m2[3],+m2[4],+m2[5],+(m2[6]||0));}
+          if(!ts){
+            // YYYY-MM-DD HH:MM:SS
+            const m2=s.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+            if(m2)ts=new Date(+m2[1],+m2[2]-1,+m2[3],+m2[4],+m2[5],+(m2[6]||0));
+          }
+          if(!ts){
+            // MM/DD/YYYY HH:MM (formato US)
+            const m3=s.match(/(\d{1,2})[\/](\d{1,2})[\/](\d{4})\s+(\d{1,2}):(\d{2})/);
+            if(m3){
+              // intentar DD/MM primero, si el día>12 es seguro DD/MM
+              const a=+m3[1],b=+m3[2];
+              if(a>12)ts=new Date(+m3[3],b-1,a,+m3[4],+m3[5]);
+              else ts=new Date(+m3[3],a-1,b,+m3[4],+m3[5]); // MM/DD
+            }
+          }
         }
         if(!ts||isNaN(ts.getTime()))return;
-        if(!CB_BIO[ced])CB_BIO[ced]={name:nom,times:[]};
-        CB_BIO[ced].times.push(ts);parsed++;
+        if(!CB_BIO[cedRaw])CB_BIO[cedRaw]={name:nom,times:[]};
+        CB_BIO[cedRaw].times.push(ts);parsed++;
       });
       st.innerHTML='<span class="ok">Biom\u00e9trico: '+Object.keys(CB_BIO).length+' personas, '+parsed+' marcaciones</span>';
+      if(parsed===0&&rows.length>1)st.innerHTML+='<br><span class="muted">Si muestra 0 marcaciones, verifica que la columna C tenga fecha y hora (no solo texto).</span>';
       const btn=document.getElementById('cb-btn-cruzar');
       if(btn&&CB_OCR_DONE)btn.disabled=false;
     }catch(err){st.innerHTML='<span class="err">Error: '+err.message+'</span>';CB_BIO=null;}
