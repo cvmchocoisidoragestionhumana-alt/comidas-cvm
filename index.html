@@ -105,6 +105,7 @@ h2{font-size:15px;margin-bottom:10px;}
     <button id="t-concilia" onclick="tab('concilia')">3 &middot; Conciliacion</button>
     <button id="t-cierre" onclick="tab('cierre')">Cierre mensual</button>
     <button id="t-personal" onclick="tab('personal')">Personal (ingresos/egresos)</button>
+    <button id="t-crucebiom" onclick="tab('crucebiom')">Cruce Biom&eacute;trico</button>
   </div>
 
   <div class="bar" id="topbar-filtros">
@@ -129,6 +130,7 @@ h2{font-size:15px;margin-bottom:10px;}
   <div id="view-seguridad" class="hidden"></div>
   <div id="view-cierre" class="hidden"></div>
   <div id="view-personal" class="hidden"></div>
+  <div id="view-crucebiom" class="hidden"></div>
 </div>
 </div>
 
@@ -138,6 +140,8 @@ h2{font-size:15px;margin-bottom:10px;}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="firebase-config.js"></script>
 <script src="nomina-data.js"></script>
 <script>
@@ -214,7 +218,7 @@ auth.onAuthStateChanged(user=>{
 
 // Define que pestañas ve cada rol y a que pestaña entra por defecto.
 const TABS_POR_ROL={
-  RRHH:        ['auth','solicitudes','cargadiaria','resumendiario','manuales','entrega','concilia','cierre','personal'],
+  RRHH:        ['auth','solicitudes','cargadiaria','resumendiario','manuales','entrega','concilia','cierre','personal','crucebiom'],
   CONTRATA:    ['solicitudes','entrega','cierre'],   // la contrata tambien ve las solicitudes aprobadas
   SOLICITANTE: ['auth']
 };
@@ -228,7 +232,7 @@ function rolPuedeVer(t){
 function applyRole(){
   const permitidas=TABS_POR_ROL[ROLE]||TABS_POR_ROL.CONTRATA;
   // Mostrar/ocultar cada boton de pestaña segun el rol
-  ['auth','solicitudes','cargadiaria','resumendiario','manuales','entrega','concilia','cierre','personal'].forEach(t=>{
+  ['auth','solicitudes','cargadiaria','resumendiario','manuales','entrega','concilia','cierre','personal','crucebiom'].forEach(t=>{
     const btn=document.getElementById('t-'+t);
     if(!btn)return;
     const visible=permitidas.indexOf(t)!==-1;
@@ -309,7 +313,7 @@ function tab(t){
   // SEGURIDAD: si el rol no puede ver esta pestaña, se le manda a su pestaña inicial
   if(ROLE && !rolPuedeVer(t)){t=TAB_INICIAL[ROLE]||'entrega';}
   TAB=t;
-  ['auth','solicitudes','cargadiaria','resumendiario','manuales','entrega','concilia','cierre','personal'].forEach(x=>{
+  ['auth','solicitudes','cargadiaria','resumendiario','manuales','entrega','concilia','cierre','personal','crucebiom'].forEach(x=>{
     document.getElementById('view-'+x).classList.toggle('hidden',x!==t);
     const b=document.getElementById('t-'+x);if(b)b.classList.toggle('active',x===t);
   });
@@ -342,6 +346,7 @@ function render(){
   if(TAB==='seguridad')renderSeguridad();
   if(TAB==='cierre')renderCierre();
   if(TAB==='personal')renderPersonal();
+  if(TAB==='crucebiom')renderCruceBiom();
 }
 
 // ---------- 1. AUTORIZAR (RRHH) / SOLICITAR-VALIDAR (SOLICITANTE) ----------
@@ -2253,6 +2258,236 @@ function exportCierreXLSX(payloadStr){
   const wb=XLSX.utils.book_new();const ws=XLSX.utils.aoa_to_sheet(rows);ws['!cols']=[{wch:14},{wch:11},{wch:11},{wch:11},{wch:11}];
   XLSX.utils.book_append_sheet(wb,ws,'Cierre '+p.mes);XLSX.writeFile(wb,'Cierre_Mensual_'+p.mes+'.xlsx');
 }
+// ========== CRUCE BIOMETRICO vs PLANILLAS (ALMUERZO) — OCR ==========
+let CB_BIO=null;
+let CB_RESULT=null;
+let CB_FECHA='';
+let CB_CEDULAS_OCR=[];
+let CB_OCR_DONE=false;
+let CB_OCR_RUNNING=false;
+
+function renderCruceBiom(){
+  const v=document.getElementById('view-crucebiom');
+  if(ROLE!=='RRHH'){v.innerHTML='<div class="card"><div class="note danger">Solo RRHH puede usar el cruce biometrico.</div></div>';return;}
+  if(!CB_FECHA)CB_FECHA=today;
+  let html='<div class="card"><h2>Cruce Biom\u00e9trico vs Planillas de Almuerzo</h2>';
+  html+='<div class="muted" style="margin-bottom:14px;">Sube las planillas escaneadas y el Excel del biom\u00e9trico. El sistema <b>lee las c\u00e9dulas autom\u00e1ticamente</b> de las planillas y detecta qui\u00e9n pidi\u00f3 almuerzo pero no marc\u00f3 entrada.</div>';
+
+  html+='<div style="margin-bottom:16px;"><label style="font-size:13px;font-weight:bold;">Fecha del cruce:</label> ';
+  html+='<input type="date" id="cb-fecha" value="'+CB_FECHA+'" style="padding:8px;" onchange="CB_FECHA=this.value"></div>';
+
+  // Paso 1: Escaner con OCR
+  html+='<div style="border:1px solid var(--azul);border-radius:8px;padding:14px;margin-bottom:12px;background:var(--azulbg);">';
+  html+='<h3 style="margin:0 0 6px;color:var(--azul);font-size:14px;">Paso 1 \u2014 Sube las planillas escaneadas</h3>';
+  html+='<div class="muted" style="margin-bottom:8px;">Sube las fotos o im\u00e1genes de las planillas de solicitud de comidas (JPG, PNG). El sistema leer\u00e1 las c\u00e9dulas autom\u00e1ticamente. Puede tardar unos segundos por imagen.</div>';
+  html+='<input type="file" id="cb-file-scan" accept="image/*" multiple onchange="cbIniciarOCR(this)">';
+  html+='<div id="cb-ocr-progress" style="margin-top:10px;"></div>';
+  html+='<div id="cb-ocr-result" style="margin-top:10px;"></div>';
+  html+='</div>';
+
+  // Paso 2: Biometrico
+  html+='<div style="border:1px solid var(--borde);border-radius:8px;padding:14px;margin-bottom:12px;">';
+  html+='<h3 style="margin:0 0 6px;color:var(--azul);font-size:14px;">Paso 2 \u2014 Sube el Excel del biom\u00e9trico</h3>';
+  html+='<div class="muted" style="margin-bottom:8px;">El archivo Excel de marcaciones (c\u00e9dula, nombre, fecha/hora).</div>';
+  html+='<input type="file" id="cb-file-bio" accept=".xlsx,.xls,.csv" onchange="cbCargarBio(this)">';
+  html+='<div id="cb-bio-status" style="margin-top:8px;">'+(CB_BIO?'<span class="ok">Biom\u00e9trico cargado: '+Object.keys(CB_BIO).length+' personas</span>':'')+'</div>';
+  html+='</div>';
+
+  html+='<div style="margin-bottom:14px;display:flex;gap:10px;flex-wrap:wrap;">';
+  html+='<button class="act prim" id="cb-btn-cruzar" onclick="cbEjecutarCruce()" style="padding:10px 24px;font-size:14px;"'+((!CB_OCR_DONE||!CB_BIO)?' disabled':'')+'>Cruzar almuerzo vs biom\u00e9trico</button>';
+  html+='<button class="act" onclick="cbLimpiar()">Limpiar todo</button></div>';
+  html+='</div>';
+  html+='<div id="cb-resultados"></div>';
+  v.innerHTML=html;
+  if(CB_OCR_DONE&&CB_CEDULAS_OCR.length>0)cbMostrarCedulasExtraidas();
+  if(CB_RESULT)cbPintarResultados();
+}
+
+async function cbIniciarOCR(input){
+  const files=Array.from(input.files||[]);
+  if(!files.length||CB_OCR_RUNNING)return;
+  CB_OCR_RUNNING=true; CB_OCR_DONE=false; CB_CEDULAS_OCR=[]; CB_RESULT=null;
+  const prog=document.getElementById('cb-ocr-progress');
+  const res=document.getElementById('cb-ocr-result'); res.innerHTML='';
+  const tot=files.length;
+  prog.innerHTML='<div style="background:var(--azulbg);padding:12px;border-radius:8px;"><b>Leyendo planillas...</b> 0/'+tot+'<div id="cb-ocr-bar" style="background:#ddd;border-radius:4px;height:8px;margin-top:8px;"><div id="cb-ocr-fill" style="background:var(--azul);height:100%;border-radius:4px;width:0%;transition:width .3s;"></div></div><div id="cb-ocr-det" class="muted" style="margin-top:6px;"></div></div>';
+
+  const worker=await Tesseract.createWorker('spa',1,{
+    workerPath:'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
+    corePath:'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
+  });
+  const todasCed=new Set();
+  for(let i=0;i<tot;i++){
+    document.getElementById('cb-ocr-det').textContent='Procesando: '+files[i].name+' ('+(i+1)+'/'+tot+')...';
+    document.getElementById('cb-ocr-fill').style.width=Math.round((i/tot)*100)+'%';
+    try{
+      const imgData=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(files[i]);});
+      const {data}=await worker.recognize(imgData);
+      (data.text.match(/\b\d[\d.\s]{4,12}\d\b/g)||[]).forEach(m=>{
+        const c=m.replace(/[.\s]/g,'').replace(/^0+/,'');
+        if(c.length>=6&&c.length<=9&&/^\d+$/.test(c))todasCed.add(c);
+      });
+    }catch(e){console.warn('OCR error:',e);}
+    prog.querySelector('b').textContent='Leyendo planillas... '+(i+1)+'/'+tot;
+    document.getElementById('cb-ocr-fill').style.width=Math.round(((i+1)/tot)*100)+'%';
+  }
+  await worker.terminate();
+
+  const nominaCeds=new Set(NOMINA.map(p=>normCed(p.ced)));
+  const validas=[]; todasCed.forEach(c=>{if(nominaCeds.has(c))validas.push(c);});
+  CB_CEDULAS_OCR=validas; CB_OCR_DONE=true; CB_OCR_RUNNING=false;
+  const desc=todasCed.size-validas.length;
+  prog.innerHTML='<div style="background:var(--verdebg);padding:12px;border-radius:8px;color:var(--verde);"><b>Lectura completa.</b> '+tot+' imagen(es). '+todasCed.size+' n\u00fameros &rarr; <b>'+validas.length+' c\u00e9dulas v\u00e1lidas</b> (en n\u00f3mina)'+(desc>0?' | '+desc+' descartadas':'')+'</div>';
+  cbMostrarCedulasExtraidas();
+  const btn=document.getElementById('cb-btn-cruzar');
+  if(btn&&CB_BIO)btn.disabled=false;
+}
+
+function cbMostrarCedulasExtraidas(){
+  const res=document.getElementById('cb-ocr-result');if(!res)return;
+  if(CB_CEDULAS_OCR.length===0){res.innerHTML='<div class="note danger">No se detectaron c\u00e9dulas v\u00e1lidas. Verifica que las im\u00e1genes sean legibles.</div>';return;}
+  let html='<div style="border:1px solid var(--verde);border-radius:8px;padding:12px;background:var(--verdebg);">';
+  html+='<h3 style="margin:0 0 6px;color:var(--verde);font-size:14px;">'+CB_CEDULAS_OCR.length+' c\u00e9dulas extra\u00eddas del esc\u00e1ner</h3>';
+  html+='<div class="muted" style="margin-bottom:8px;">Revisa la lista. Si alguna c\u00e9dula est\u00e1 mal, corr\u00edgela. Puedes agregar o quitar l\u00edneas.</div>';
+  html+='<textarea id="cb-cedulas-edit" rows="8" style="width:100%;font-family:monospace;font-size:13px;padding:8px;border:1px solid var(--borde);border-radius:6px;">'+CB_CEDULAS_OCR.join('\n')+'</textarea></div>';
+  res.innerHTML=html;
+}
+
+function cbCargarBio(input){
+  const f=input.files[0];if(!f)return;
+  const st=document.getElementById('cb-bio-status');
+  st.innerHTML='<span class="muted">Leyendo...</span>';
+  const reader=new FileReader();
+  reader.onload=function(e){
+    try{
+      const data=new Uint8Array(e.target.result);
+      const wb=XLSX.read(data,{type:'array',cellDates:true});
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      const rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,dateNF:'dd/mm/yyyy hh:mm:ss'});
+      CB_BIO={};let parsed=0;
+      rows.forEach(r=>{
+        if(!r||r.length<3)return;
+        const ced=String(r[0]||'').replace(/\u00a0/g,'').replace(/[.\s\-]/g,'').replace(/^0+/,'').trim();
+        if(!ced||!/^\d+$/.test(ced))return;
+        const nom=String(r[1]||'').replace(/\u00a0/g,'').trim();
+        let ts=null;const raw2=r[2];
+        if(raw2 instanceof Date){ts=raw2;}
+        else{const s=String(raw2||'').trim();
+          const m=s.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+          if(m)ts=new Date(+m[3],+m[2]-1,+m[1],+m[4],+m[5],+(m[6]||0));
+          else{const m2=s.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+            if(m2)ts=new Date(+m2[1],+m2[2]-1,+m2[3],+m2[4],+m2[5],+(m2[6]||0));}
+        }
+        if(!ts||isNaN(ts.getTime()))return;
+        if(!CB_BIO[ced])CB_BIO[ced]={name:nom,times:[]};
+        CB_BIO[ced].times.push(ts);parsed++;
+      });
+      st.innerHTML='<span class="ok">Biom\u00e9trico: '+Object.keys(CB_BIO).length+' personas, '+parsed+' marcaciones</span>';
+      const btn=document.getElementById('cb-btn-cruzar');
+      if(btn&&CB_OCR_DONE)btn.disabled=false;
+    }catch(err){st.innerHTML='<span class="err">Error: '+err.message+'</span>';CB_BIO=null;}
+  };reader.readAsArrayBuffer(f);
+}
+
+function cbEjecutarCruce(){
+  if(!CB_BIO||!Object.keys(CB_BIO).length){alert('Sube el biom\u00e9trico (Paso 2).');return;}
+  const ta=document.getElementById('cb-cedulas-edit');
+  const raw=ta?ta.value:CB_CEDULAS_OCR.join('\n');
+  const lineas=raw.split(/[\n,;]+/).map(l=>l.trim()).filter(l=>l);
+  if(!lineas.length){alert('No hay c\u00e9dulas. Sube las planillas (Paso 1).');return;}
+  const planSet=new Map();
+  lineas.forEach(l=>{const c=normCed(l);if(c&&/^\d+$/.test(c)&&!planSet.has(c))planSet.set(c,{ced:c});});
+  planSet.forEach((obj,ced)=>{
+    const p=NOMINA.find(n=>normCed(n.ced)===ced);
+    obj.nom=p?p.nom:(CB_BIO[ced]?CB_BIO[ced].name:'(no en nomina)');
+    obj.ger=p?p.ger:'';
+  });
+  const fp=CB_FECHA.split('-');const dN=+fp[2],mN=+fp[1]-1,aN=+fp[0];
+  const amSet=new Set(),pmSet=new Set(),anySet=new Set();
+  Object.keys(CB_BIO).forEach(ced=>{CB_BIO[ced].times.forEach(ts=>{
+    if(ts.getFullYear()===aN&&ts.getMonth()===mN&&ts.getDate()===dN){anySet.add(ced);if(ts.getHours()<12)amSet.add(ced);else pmSet.add(ced);}
+  });});
+  const sinMarca=[],corregidos=[];
+  planSet.forEach((obj,ced)=>{
+    if(!amSet.has(ced)){
+      if(!anySet.has(ced)){
+        const fix=cbBuscarPorNombre(ced,obj.nom);
+        if(fix&&amSet.has(fix)){corregidos.push({cedPlan:ced,cedReal:fix,nom:obj.nom});return;}
+        sinMarca.push({ced,nom:obj.nom,ger:obj.ger,obs:'No aparece en el biom\u00e9trico del d\u00eda'});
+      }else{sinMarca.push({ced,nom:obj.nom,ger:obj.ger,obs:'Solo marc\u00f3 PM \u2014 no marc\u00f3 entrada en la ma\u00f1ana'});}
+    }
+  });
+  CB_RESULT={fecha:CB_FECHA,totalPlanilla:planSet.size,totalBio:anySet.size,sinMarca,corregidos,amTotal:amSet.size,pmTotal:pmSet.size};
+  cbPintarResultados();
+}
+
+function cbBuscarPorNombre(cedPlan,nomPlan){
+  if(!nomPlan||nomPlan==='(no en nomina)')return null;
+  const tk=nomPlan.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').split(/\s+/).filter(t=>t.length>2);
+  if(tk.length<2)return null;let mejor=null,ms=0;
+  Object.keys(CB_BIO).forEach(cb=>{
+    const nb=CB_BIO[cb].name.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+    const tb=nb.split(/\s+/).filter(t=>t.length>2);
+    const c=tk.filter(t=>tb.indexOf(t)!==-1).length;
+    if(c>=2&&c>ms&&cedPlan.length===cb.length){let d=0;for(let i=0;i<cedPlan.length;i++)if(cedPlan[i]!==cb[i])d++;if(d<=2){mejor=cb;ms=c;}}
+  });return mejor;
+}
+
+function cbPintarResultados(){
+  const cont=document.getElementById('cb-resultados');if(!cont||!CB_RESULT)return;
+  const r=CB_RESULT;
+  let html='<div class="card"><h2>Resultado \u2014 Cruce Almuerzo vs Biom\u00e9trico \u2014 '+fechaBonita(r.fecha)+'</h2>';
+  html+='<div class="kpis">';
+  html+='<div class="kpi"><div class="l">Pidieron almuerzo</div><div class="v">'+r.totalPlanilla+'</div></div>';
+  html+='<div class="kpi"><div class="l">Marcaron biom\u00e9trico</div><div class="v">'+r.totalBio+'</div></div>';
+  html+='<div class="kpi"><div class="l">Entrada AM</div><div class="v">'+r.amTotal+'</div></div>';
+  html+='<div class="kpi" style="background:var(--rojobg);"><div class="l" style="color:var(--rojo);">Para excluir</div><div class="v" style="color:var(--rojo);">'+r.sinMarca.length+'</div></div>';
+  html+='</div>';
+  if(r.corregidos.length>0){
+    html+='<div class="note" style="border-color:var(--azul);margin-bottom:12px;"><b>C\u00e9dulas corregidas</b> (OCR las ley\u00f3 mal, pero la persona s\u00ed marc\u00f3):<br>';
+    r.corregidos.forEach(c=>{html+=c.nom+': OCR <s>'+c.cedPlan+'</s> \u2192 real <b>'+c.cedReal+'</b><br>';});
+    html+='</div>';
+  }
+  if(r.sinMarca.length===0){
+    html+='<div class="note" style="border-color:var(--verde);"><b style="color:var(--verde);">Todo cuadra.</b> Todos los que pidieron almuerzo marcaron entrada AM. No hay nadie que excluir.</div>';
+  }else{
+    html+='<div class="note danger" style="margin-bottom:12px;"><b>'+r.sinMarca.length+' persona(s)</b> pidieron almuerzo pero NO marcaron entrada AM. <b>Excl\u00fayelas del almuerzo.</b></div>';
+    html+='<div class="tablewrap"><table><thead><tr><th style="width:40px;">N\u00b0</th><th>C\u00e9dula</th><th>Nombre</th><th>Gerencia</th><th>Motivo</th></tr></thead><tbody>';
+    r.sinMarca.forEach((p,i)=>{
+      html+='<tr style="background:var(--rojobg);"><td style="text-align:center;">'+(i+1)+'</td><td style="text-align:center;font-weight:bold;">'+p.ced+'</td><td>'+p.nom+'</td><td>'+p.ger+'</td><td style="color:var(--rojo);"><b>'+p.obs+'</b></td></tr>';
+    });
+    html+='</tbody></table></div>';
+    html+='<div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;">';
+    html+='<button class="act prim" onclick="cbExportXLSX()">Exportar a Excel</button>';
+    html+='<button class="act" onclick="cbCopiarCedulas()">Copiar c\u00e9dulas para excluir</button></div>';
+  }
+  html+='</div>';cont.innerHTML=html;
+}
+
+function cbExportXLSX(){
+  if(!CB_RESULT||typeof XLSX==='undefined')return;const r=CB_RESULT;
+  const rows=[['CRUCE BIOMETRICO vs PLANILLAS DE ALMUERZO \u2014 EXCLUSIONES'],
+    ['Fecha: '+fechaBonita(r.fecha)+' | PIM III Choco-Isidora | CVM'],
+    ['Pidieron almuerzo: '+r.totalPlanilla+' | SIN entrada AM: '+r.sinMarca.length],[],
+    ['N\u00b0','C\u00e9dula','Nombre y Apellido','Gerencia','Motivo']];
+  r.sinMarca.forEach((p,i)=>rows.push([i+1,p.ced,p.nom,p.ger,p.obs]));
+  if(r.corregidos.length>0){rows.push([]);rows.push(['CEDULAS CORREGIDAS (no se excluyen)']);
+    rows.push(['C\u00e9dula OCR','C\u00e9dula real','Nombre']);
+    r.corregidos.forEach(c=>rows.push([c.cedPlan,c.cedReal,c.nom]));}
+  const wb=XLSX.utils.book_new();const ws=XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols']=[{wch:6},{wch:14},{wch:38},{wch:28},{wch:40}];
+  ws['!merges']=[{s:{r:0,c:0},e:{r:0,c:4}},{s:{r:1,c:0},e:{r:1,c:4}},{s:{r:2,c:0},e:{r:2,c:4}}];
+  XLSX.utils.book_append_sheet(wb,ws,'Exclusiones');XLSX.writeFile(wb,'Cruce_Almuerzo_'+r.fecha+'.xlsx');
+}
+
+function cbCopiarCedulas(){
+  if(!CB_RESULT)return;const txt=CB_RESULT.sinMarca.map(p=>p.ced).join('\n');
+  navigator.clipboard.writeText(txt).then(()=>alert(CB_RESULT.sinMarca.length+' cedulas copiadas.')).catch(()=>{
+    const ta=document.createElement('textarea');ta.value=txt;document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);
+    alert(CB_RESULT.sinMarca.length+' cedulas copiadas.');});
+}
+
+function cbLimpiar(){CB_BIO=null;CB_RESULT=null;CB_CEDULAS_OCR=[];CB_OCR_DONE=false;renderCruceBiom();}
 </script>
 </body>
 </html>
