@@ -2259,25 +2259,31 @@ function exportCierreXLSX(payloadStr){
   XLSX.utils.book_append_sheet(wb,ws,'Cierre '+p.mes);XLSX.writeFile(wb,'Cierre_Mensual_'+p.mes+'.xlsx');
 }
 
+
 // ========== CRUCE BIOMETRICO vs PLANILLAS (ALMUERZO) — OCR ==========
 let CB_BIO=null;
 let CB_RESULT=null;
 let CB_FECHA='';
-let CB_CEDULAS_OCR=[];   // {ced, gerPlanilla}
-let CB_DESCARTADAS=[];
+let CB_CEDULAS_OCR=[];   // array de cédulas string (solo válidas en nómina)
+let CB_DESCARTADAS=[];   // [{num, ger}]
 let CB_DESCARTADAS_POR_GER={};
 let CB_OCR_DONE=false;
 let CB_OCR_RUNNING=false;
+
+// Buscar trabajador en nómina por cédula
+function cbBuscarNomina(ced){
+  return NOMINA.find(n=>normCed(n.ced)===ced)||null;
+}
 
 function renderCruceBiom(){
   const v=document.getElementById('view-crucebiom');
   if(ROLE!=='RRHH'){v.innerHTML='<div class="card"><div class="note danger">Solo RRHH puede usar el cruce biom\u00e9trico.</div></div>';return;}
   if(!CB_FECHA)CB_FECHA=today;
   let html='<div class="card"><h2>\ud83d\udd0d Cruce Biom\u00e9trico vs Planillas de Almuerzo</h2>';
-  html+='<div class="muted" style="margin-bottom:14px;">Sube las planillas escaneadas de cada gerencia y el Excel del biom\u00e9trico. El sistema <b>lee las c\u00e9dulas autom\u00e1ticamente</b>, cruza contra las marcaciones AM y te indica:</div>';
+  html+='<div class="muted" style="margin-bottom:14px;">Sube las planillas escaneadas del almuerzo y el Excel del biom\u00e9trico. El sistema cruza y te indica:</div>';
   html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;">';
-  html+='<div style="background:var(--rojobg);padding:10px;border-radius:8px;font-size:12px;"><b style="color:var(--rojo);">\u274c EXCLUIR DEL ALMUERZO</b><br>Personas que pidieron almuerzo pero NO marcaron entrada AM en el biom\u00e9trico.</div>';
-  html+='<div style="background:var(--ambarbg);padding:10px;border-radius:8px;font-size:12px;"><b style="color:var(--ambar);">\u26a0\ufe0f REVISAR MANUALMENTE</b><br>C\u00e9dulas que el OCR no encontr\u00f3 en n\u00f3mina: muestra nombre del biom\u00e9trico si existe para saber si es externo o error.</div>';
+  html+='<div style="background:var(--rojobg);padding:10px;border-radius:8px;font-size:12px;"><b style="color:var(--rojo);">\u274c EXCLUIR</b><br>Pidieron almuerzo pero NO marcaron entrada AM.</div>';
+  html+='<div style="background:var(--ambarbg);padding:10px;border-radius:8px;font-size:12px;"><b style="color:var(--ambar);">\u26a0\ufe0f REVISAR</b><br>C\u00e9dulas le\u00eddas que no est\u00e1n en n\u00f3mina (error de esc\u00e1ner o personal externo).</div>';
   html+='</div>';
 
   html+='<div style="margin-bottom:16px;"><label style="font-size:13px;font-weight:bold;">Fecha del cruce:</label> ';
@@ -2285,8 +2291,8 @@ function renderCruceBiom(){
 
   // Paso 1
   html+='<div style="border:1px solid var(--azul);border-radius:8px;padding:14px;margin-bottom:12px;background:var(--azulbg);">';
-  html+='<h3 style="margin:0 0 6px;color:var(--azul);font-size:14px;">Paso 1 \u2014 Sube las planillas escaneadas (una por gerencia)</h3>';
-  html+='<div class="muted" style="margin-bottom:8px;">Fotos o PDF. El sistema detecta la gerencia y lee las c\u00e9dulas. <b>Mejor calidad = m\u00e1s c\u00e9dulas detectadas.</b></div>';
+  html+='<h3 style="margin:0 0 6px;color:var(--azul);font-size:14px;">Paso 1 \u2014 Sube las planillas escaneadas del almuerzo</h3>';
+  html+='<div class="muted" style="margin-bottom:8px;">Fotos o PDF. El sistema lee las c\u00e9dulas y las busca en la n\u00f3mina para obtener nombre y gerencia.</div>';
   html+='<input type="file" id="cb-file-scan" accept="image/*,application/pdf" multiple onchange="cbIniciarOCR(this)">';
   html+='<div id="cb-ocr-progress" style="margin-top:10px;"></div>';
   html+='<div id="cb-ocr-result" style="margin-top:10px;"></div>';
@@ -2310,10 +2316,32 @@ function renderCruceBiom(){
   if(CB_RESULT)cbPintarResultados();
 }
 
+// Filtro inteligente: descartar números que no parecen cédulas venezolanas
+function cbEsCedulaValida(num){
+  if(num.length<7||num.length>9)return false;
+  // descartar si parece fecha: DDMMYYYY o MMDDYYYY
+  if(num.length===8){
+    const d1=+num.substring(0,2),m1=+num.substring(2,4),y1=+num.substring(4,8);
+    if(y1>=1950&&y1<=2030&&m1>=1&&m1<=12&&d1>=1&&d1<=31)return false;
+    const m2=+num.substring(0,2),d2=+num.substring(2,4),y2=+num.substring(4,8);
+    if(y2>=1950&&y2<=2030&&m2>=1&&m2<=12&&d2>=1&&d2<=31)return false;
+    // YYYYMMDD
+    const y3=+num.substring(0,4),m3=+num.substring(4,6),d3=+num.substring(6,8);
+    if(y3>=1950&&y3<=2030&&m3>=1&&m3<=12&&d3>=1&&d3<=31)return false;
+  }
+  // descartar números que empiezan en 0 después de limpiar
+  if(num[0]==='0')return false;
+  // rango típico de cédulas venezolanas: entre 1.000.000 y 99.999.999
+  const n=parseInt(num,10);
+  if(n<1000000||n>99999999)return false;
+  return true;
+}
+
 async function cbIniciarOCR(input){
   const files=Array.from(input.files||[]);
   if(!files.length||CB_OCR_RUNNING)return;
   CB_OCR_RUNNING=true; CB_OCR_DONE=false; CB_CEDULAS_OCR=[]; CB_RESULT=null;
+  CB_DESCARTADAS=[]; CB_DESCARTADAS_POR_GER={};
   const prog=document.getElementById('cb-ocr-progress');
   const res=document.getElementById('cb-ocr-result'); res.innerHTML='';
 
@@ -2329,7 +2357,7 @@ async function cbIniciarOCR(input){
         pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
         const pdf=await pdfjsLib.getDocument({data:arrayBuf}).promise;
         for(let p=1;p<=pdf.numPages;p++){
-          document.getElementById('cb-ocr-det').textContent='PDF: '+file.name+' \u2014 p\u00e1gina '+p+'/'+pdf.numPages+'...';
+          document.getElementById('cb-ocr-det').textContent='PDF: '+file.name+' p\u00e1gina '+p+'/'+pdf.numPages+'...';
           const page=await pdf.getPage(p);
           const scale=3.0;
           const viewport=page.getViewport({scale});
@@ -2365,10 +2393,9 @@ async function cbIniciarOCR(input){
   });
   await worker.setParameters({tessedit_pageseg_mode:'6'});
 
-  const gerenciasConocidas=[...new Set(NOMINA.map(p=>p.ger))].filter(g=>g);
-  const todasCed=new Map(); // ced -> gerenciaPlanilla
-  const descartadasPorGer={};
   const nominaCeds=new Set(NOMINA.map(p=>normCed(p.ced)));
+  const validasSet=new Set();       // cédulas que SÍ están en nómina
+  const descartadasSet=new Set();   // números que parecen cédula pero NO están en nómina
 
   for(let i=0;i<tot;i++){
     document.getElementById('cb-ocr-det').textContent='OCR: '+imagenes[i].name+' ('+(i+1)+'/'+tot+')...';
@@ -2376,41 +2403,24 @@ async function cbIniciarOCR(input){
     try{
       const {data}=await worker.recognize(imagenes[i].data);
       const txt=data.text;
-      let gerPagina='(sin gerencia)';
-      const txtUp=txt.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-      for(const g of gerenciasConocidas){
-        const gUp=g.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-        const palabras=gUp.split(/\s+/).filter(p=>p.length>3);
-        const coinciden=palabras.filter(p=>txtUp.indexOf(p)!==-1).length;
-        if(coinciden>=1&&coinciden>=Math.ceil(palabras.length*0.5)){gerPagina=g;break;}
-      }
-      if(gerPagina==='(sin gerencia)'){
-        const mGer=txtUp.match(/GERENCIA\s+(?:DE\s+)?(?:SOLICITANTE|SOLICITANT)?\s*[:\s]*([A-Z\s]+?)(?:\n|CENTRO|FECHA|DESAYUNO)/);
-        if(mGer)gerPagina=mGer[1].trim().substring(0,40);
-        else{const mCoord=txtUp.match(/COORDINACI[O0]N\s+(?:DE\s+)?([A-Z\s]+?)(?:\n|CENTRO|FECHA|DESAYUNO)/);if(mCoord)gerPagina=mCoord[1].trim().substring(0,40);}
-      }
       const nums=new Set();
-      (txt.match(/\d[\d.\s,]{3,15}\d/g)||[]).forEach(m=>{const c=m.replace(/[.\s,]/g,'').replace(/^0+/,'');if(c.length>=6&&c.length<=9&&/^\d+$/.test(c))nums.add(c);});
-      (txt.match(/\b\d{6,9}\b/g)||[]).forEach(m=>{const c=m.replace(/^0+/,'');if(c.length>=6&&c.length<=9&&/^\d+$/.test(c))nums.add(c);});
+      (txt.match(/\d[\d.\s,]{3,15}\d/g)||[]).forEach(m=>{const c=m.replace(/[.\s,]/g,'').replace(/^0+/,'');if(cbEsCedulaValida(c))nums.add(c);});
+      (txt.match(/\b\d{6,9}\b/g)||[]).forEach(m=>{const c=m.replace(/^0+/,'');if(cbEsCedulaValida(c))nums.add(c);});
       nums.forEach(c=>{
-        if(nominaCeds.has(c)){if(!todasCed.has(c))todasCed.set(c,gerPagina);}
-        else{if(!descartadasPorGer[gerPagina])descartadasPorGer[gerPagina]=[];if(!descartadasPorGer[gerPagina].includes(c))descartadasPorGer[gerPagina].push(c);}
+        if(nominaCeds.has(c))validasSet.add(c);
+        else descartadasSet.add(c);
       });
     }catch(e){console.warn('OCR error:',e);}
-    prog.querySelector('b').textContent='Leyendo c\u00e9dulas con OCR... '+(i+1)+'/'+tot+' p\u00e1ginas';
+    prog.querySelector('b').textContent='Leyendo c\u00e9dulas... '+(i+1)+'/'+tot+' p\u00e1ginas';
     document.getElementById('cb-ocr-fill').style.width=Math.round(((i+1)/tot)*100)+'%';
   }
   await worker.terminate();
 
-  // Guardar con la gerencia de la planilla
-  CB_CEDULAS_OCR=[];
-  todasCed.forEach((ger,ced)=>{CB_CEDULAS_OCR.push({ced:ced,gerPlanilla:ger});});
-  const descartadas=[];
-  Object.keys(descartadasPorGer).sort().forEach(ger=>{descartadasPorGer[ger].forEach(c=>descartadas.push({num:c,ger:ger}));});
-  CB_DESCARTADAS=descartadas; CB_DESCARTADAS_POR_GER=descartadasPorGer;
+  CB_CEDULAS_OCR=[...validasSet];
+  CB_DESCARTADAS=[...descartadasSet].map(c=>({num:c}));
   CB_OCR_DONE=true; CB_OCR_RUNNING=false;
-  const desc=descartadas.length;
-  prog.innerHTML='<div style="background:var(--verdebg);padding:12px;border-radius:8px;color:var(--verde);"><b>\u2705 Lectura completa.</b> '+tot+' p\u00e1gina(s). '+(CB_CEDULAS_OCR.length+desc)+' n\u00fameros detectados &rarr; <b>'+CB_CEDULAS_OCR.length+' c\u00e9dulas v\u00e1lidas</b> (en n\u00f3mina)'+(desc>0?' | <span style="color:var(--ambar);">'+desc+' no coinciden</span>':'')+'</div>';
+  const desc=CB_DESCARTADAS.length;
+  prog.innerHTML='<div style="background:var(--verdebg);padding:12px;border-radius:8px;color:var(--verde);"><b>\u2705 Lectura completa.</b> '+tot+' p\u00e1gina(s) &rarr; <b>'+CB_CEDULAS_OCR.length+' c\u00e9dulas en n\u00f3mina</b>'+(desc>0?' | <span style="color:var(--ambar);">'+desc+' no reconocidas</span>':'')+'</div>';
   cbMostrarCedulasExtraidas();
   const btn=document.getElementById('cb-btn-cruzar');
   if(btn&&CB_BIO)btn.disabled=false;
@@ -2420,51 +2430,57 @@ function cbMostrarCedulasExtraidas(){
   const res=document.getElementById('cb-ocr-result');if(!res)return;
   let html='';
   if(CB_CEDULAS_OCR.length===0&&CB_DESCARTADAS.length===0){
-    res.innerHTML='<div class="note">No se detectaron n\u00fameros de c\u00e9dula. Intenta con im\u00e1genes m\u00e1s n\u00edtidas.</div>';return;
+    res.innerHTML='<div class="note">No se detectaron c\u00e9dulas. Intenta con im\u00e1genes m\u00e1s n\u00edtidas.</div>';return;
   }
+
+  // === Cédulas válidas agrupadas por GERENCIA DE NÓMINA ===
   if(CB_CEDULAS_OCR.length>0){
     html+='<div style="border:1px solid var(--verde);border-radius:8px;padding:14px;margin-bottom:12px;background:var(--verdebg);">';
-    html+='<h3 style="margin:0 0 6px;color:var(--verde);font-size:14px;">\u2705 '+CB_CEDULAS_OCR.length+' c\u00e9dulas encontradas en n\u00f3mina</h3>';
-    // Agrupar por gerencia de planilla
+    html+='<h3 style="margin:0 0 8px;color:var(--verde);font-size:14px;">\u2705 '+CB_CEDULAS_OCR.length+' trabajadores encontrados en n\u00f3mina</h3>';
+    // Agrupar por gerencia de la NÓMINA
     const porGer={};
-    CB_CEDULAS_OCR.forEach(o=>{if(!porGer[o.gerPlanilla])porGer[o.gerPlanilla]=[];porGer[o.gerPlanilla].push(o.ced);});
+    CB_CEDULAS_OCR.forEach(ced=>{
+      const p=cbBuscarNomina(ced);
+      const ger=p?p.ger:'(sin gerencia)';
+      if(!porGer[ger])porGer[ger]=[];
+      porGer[ger].push({ced:ced,nom:p?p.nom:'?'});
+    });
     const gers=Object.keys(porGer).sort();
-    html+='<div class="muted" style="margin-bottom:6px;">'+gers.length+' planilla(s) detectadas. Puedes editar la lista antes de cruzar.</div>';
-    gers.forEach(g=>{html+='<div style="font-size:12px;margin-bottom:2px;"><b style="color:var(--azul);">\ud83c\udfe2 '+g+':</b> '+porGer[g].length+' c\u00e9dulas</div>';});
-    html+='<textarea id="cb-cedulas-edit" rows="8" style="width:100%;font-family:monospace;font-size:13px;padding:8px;border:1px solid var(--borde);border-radius:6px;margin-top:6px;">'+CB_CEDULAS_OCR.map(o=>o.ced).join('\n')+'</textarea></div>';
-  }
-  if(CB_DESCARTADAS.length>0){
-    html+='<div style="border:1px solid var(--ambar);border-radius:8px;padding:14px;margin-bottom:12px;background:var(--ambarbg);">';
-    html+='<h3 style="margin:0 0 6px;color:var(--ambar);font-size:14px;">\u26a0\ufe0f '+CB_DESCARTADAS.length+' c\u00e9dulas NO est\u00e1n en n\u00f3mina</h3>';
-    html+='<div class="muted" style="margin-bottom:10px;">Error de esc\u00e1ner o personal externo. Si reconoces alguna, haz clic en <b>"Agregar"</b>. Al ejecutar el cruce, el sistema buscar\u00e1 nombres en el biom\u00e9trico.</div>';
-    const gerencias=Object.keys(CB_DESCARTADAS_POR_GER).sort();
-    gerencias.forEach(ger=>{
-      const nums=CB_DESCARTADAS_POR_GER[ger];
-      html+='<div style="margin-bottom:10px;"><div style="font-weight:bold;font-size:13px;color:var(--ambar);margin-bottom:4px;">\ud83c\udfe2 '+ger+' ('+nums.length+')</div>';
-      html+='<div style="display:flex;flex-wrap:wrap;gap:6px;">';
-      nums.forEach(n=>{
-        let hint='';let sugerida='';
-        NOMINA.forEach(p=>{const cn=normCed(p.ced);if(cn.length===n.length){let d=0;for(let i=0;i<n.length;i++)if(n[i]!==cn[i])d++;if(d===1){hint=' title="Posible: '+cn+' \u2014 '+p.nom+'" ';sugerida='\u2248';}}});
-        html+='<div style="background:#fff;border:1px solid var(--borde);border-radius:6px;padding:4px 8px;font-size:12px;font-family:monospace;"'+hint+'>';
-        html+=sugerida+n;
-        html+=' <button onclick="cbAgregarDescartada(\''+n+'\')" style="background:var(--azul);color:#fff;border:none;border-radius:4px;padding:1px 6px;font-size:10px;cursor:pointer;" title="Incluir en el cruce">+</button>';
-        html+='</div>';
-      });
-      html+='</div></div>';
+    html+='<div style="margin-bottom:8px;">';
+    gers.forEach(g=>{
+      html+='<div style="font-size:12px;margin-bottom:2px;"><b style="color:var(--azul);">\ud83c\udfe2 '+g+':</b> '+porGer[g].length+' trabajadores</div>';
     });
     html+='</div>';
+    html+='<details><summary style="cursor:pointer;font-size:12px;color:var(--gris);">Ver/editar lista de c\u00e9dulas</summary>';
+    html+='<textarea id="cb-cedulas-edit" rows="8" style="width:100%;font-family:monospace;font-size:13px;padding:8px;border:1px solid var(--borde);border-radius:6px;margin-top:6px;">'+CB_CEDULAS_OCR.join('\n')+'</textarea></details>';
+    html+='</div>';
+  }
+
+  // === No reconocidas (colapsable) ===
+  if(CB_DESCARTADAS.length>0){
+    html+='<details style="border:1px solid var(--ambar);border-radius:8px;margin-bottom:12px;background:var(--ambarbg);">';
+    html+='<summary style="padding:14px;cursor:pointer;"><span style="color:var(--ambar);font-weight:bold;font-size:14px;">\u26a0\ufe0f '+CB_DESCARTADAS.length+' c\u00e9dulas no reconocidas</span><span class="muted" style="margin-left:8px;">Clic para ver \u2014 Al ejecutar el cruce, el sistema buscar\u00e1 nombres en el biom\u00e9trico.</span></summary>';
+    html+='<div style="padding:0 14px 14px;">';
+    html+='<div style="display:flex;flex-wrap:wrap;gap:6px;">';
+    CB_DESCARTADAS.forEach(d=>{
+      // Buscar cédula parecida en nómina
+      let hint='',sug='';
+      NOMINA.forEach(p=>{const cn=normCed(p.ced);if(cn.length===d.num.length){let df=0;for(let i=0;i<d.num.length;i++)if(d.num[i]!==cn[i])df++;if(df===1){hint=' title="Posible: '+cn+' ('+p.nom+')" ';sug='\u2248';}}});
+      html+='<div style="background:#fff;border:1px solid var(--borde);border-radius:6px;padding:3px 7px;font-size:11px;font-family:monospace;"'+hint+'>';
+      html+=sug+d.num;
+      html+=' <button onclick="cbAgregarDescartada(\''+d.num+'\')" style="background:var(--azul);color:#fff;border:none;border-radius:3px;padding:0 5px;font-size:10px;cursor:pointer;">+</button>';
+      html+='</div>';
+    });
+    html+='</div></div></details>';
   }
   res.innerHTML=html;
 }
 
 function cbAgregarDescartada(ced){
-  const yaExiste=CB_CEDULAS_OCR.some(o=>o.ced===ced);
-  if(!yaExiste){CB_CEDULAS_OCR.push({ced:ced,gerPlanilla:'(agregada manualmente)'});const ta=document.getElementById('cb-cedulas-edit');if(ta)ta.value=CB_CEDULAS_OCR.map(o=>o.ced).join('\n');}
+  if(!CB_CEDULAS_OCR.includes(ced))CB_CEDULAS_OCR.push(ced);
   CB_DESCARTADAS=CB_DESCARTADAS.filter(d=>d.num!==ced);
-  Object.keys(CB_DESCARTADAS_POR_GER).forEach(g=>{CB_DESCARTADAS_POR_GER[g]=CB_DESCARTADAS_POR_GER[g].filter(n=>n!==ced);if(CB_DESCARTADAS_POR_GER[g].length===0)delete CB_DESCARTADAS_POR_GER[g];});
   cbMostrarCedulasExtraidas();
 }
-
 
 function cbCargarBio(input){
   const f=input.files[0];if(!f)return;
@@ -2477,7 +2493,6 @@ function cbCargarBio(input){
       const ws=wb.Sheets[wb.SheetNames[0]];
       const rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:''});
       CB_BIO={};let parsed=0;
-      // Detectar columnas: buscar cédula, nombre, fecha/hora
       let colCed=-1,colNom=-1,colFecha=-1;
       if(rows.length>0){
         const h=rows[0].map(c=>String(c).toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''));
@@ -2487,40 +2502,22 @@ function cbCargarBio(input){
           if(colFecha<0&&(c.includes('FECHA')||c.includes('HORA')||c.includes('MARCACION')||c.includes('REGISTRO')||c.includes('TIMESTAMP')))colFecha=i;
         });
       }
-      // Fallback: cédula=col A, nombre=col B, fecha=col C
-      if(colCed<0)colCed=0;
-      if(colNom<0)colNom=1;
-      if(colFecha<0)colFecha=2;
-
+      if(colCed<0)colCed=0;if(colNom<0)colNom=1;if(colFecha<0)colFecha=2;
       rows.forEach((row,ri)=>{
-        if(ri===0&&rows.length>5)return; // saltar cabecera si hay muchas filas
+        if(ri===0&&rows.length>5)return;
         const cedRaw=normCed(String(row[colCed]||''));
         if(!cedRaw||!/^\d+$/.test(cedRaw))return;
         const nom=String(row[colNom]||'').trim();
-        // parsear fecha/hora
         let ts=null;
         const cellVal=row[colFecha];
         if(typeof cellVal==='number'){
-          // número Excel
-          const epoch=new Date(1899,11,30);
-          ts=new Date(epoch.getTime()+cellVal*86400000);
+          const epoch=new Date(1899,11,30);ts=new Date(epoch.getTime()+cellVal*86400000);
         }else{
           const s=String(cellVal||'');
-          // DD/MM/YYYY HH:MM
           const m1=s.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
-          if(m1){
-            const a=+m1[1],b=+m1[2],y=+m1[3];
-            if(a>12)ts=new Date(y,b-1,a,+m1[4],+m1[5],+(m1[6]||0));
-            else ts=new Date(y,a-1,b,+m1[4],+m1[5],+(m1[6]||0));
-          }
-          if(!ts){
-            const m2=s.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
-            if(m2)ts=new Date(+m2[1],+m2[2]-1,+m2[3],+m2[4],+m2[5],+(m2[6]||0));
-          }
-          if(!ts){
-            const m3=s.match(/(\d{1,2})[\/](\d{1,2})[\/](\d{4})\s+(\d{1,2}):(\d{2})/);
-            if(m3){const a=+m3[1],b=+m3[2];if(a>12)ts=new Date(+m3[3],b-1,a,+m3[4],+m3[5]);else ts=new Date(+m3[3],a-1,b,+m3[4],+m3[5]);}
-          }
+          if(m1){const a=+m1[1],b=+m1[2],y=+m1[3];if(a>12)ts=new Date(y,b-1,a,+m1[4],+m1[5],+(m1[6]||0));else ts=new Date(y,a-1,b,+m1[4],+m1[5],+(m1[6]||0));}
+          if(!ts){const m2=s.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);if(m2)ts=new Date(+m2[1],+m2[2]-1,+m2[3],+m2[4],+m2[5],+(m2[6]||0));}
+          if(!ts){const m3=s.match(/(\d{1,2})[\/](\d{1,2})[\/](\d{4})\s+(\d{1,2}):(\d{2})/);if(m3){const a=+m3[1],b=+m3[2];if(a>12)ts=new Date(+m3[3],b-1,a,+m3[4],+m3[5]);else ts=new Date(+m3[3],a-1,b,+m3[4],+m3[5]);}}
         }
         if(!ts||isNaN(ts.getTime()))return;
         if(!CB_BIO[cedRaw])CB_BIO[cedRaw]={name:nom,times:[]};
@@ -2528,105 +2525,81 @@ function cbCargarBio(input){
         CB_BIO[cedRaw].times.push(ts);parsed++;
       });
       st.innerHTML='<span style="color:var(--verde);font-weight:bold;">\u2705 Biom\u00e9trico: '+Object.keys(CB_BIO).length+' personas, '+parsed+' marcaciones</span>';
-      if(parsed===0&&rows.length>1)st.innerHTML+='<br><span class="muted">Si muestra 0 marcaciones, verifica que la columna de fecha/hora tenga formato correcto.</span>';
+      if(parsed===0&&rows.length>1)st.innerHTML+='<br><span class="muted">0 marcaciones \u2014 verifica que la columna de fecha/hora tenga formato correcto.</span>';
       const btn=document.getElementById('cb-btn-cruzar');
       if(btn&&CB_OCR_DONE)btn.disabled=false;
-    }catch(err){st.innerHTML='<span style="color:var(--rojo);font-weight:bold;">Error: '+err.message+'</span>';CB_BIO=null;}
+    }catch(err){st.innerHTML='<span style="color:var(--rojo);">Error: '+err.message+'</span>';CB_BIO=null;}
   };reader.readAsArrayBuffer(f);
 }
 
 function cbEjecutarCruce(){
   if(!CB_BIO||!Object.keys(CB_BIO).length){alert('Sube el biom\u00e9trico (Paso 2).');return;}
   const ta=document.getElementById('cb-cedulas-edit');
-  const raw=ta?ta.value:CB_CEDULAS_OCR.map(o=>o.ced).join('\n');
+  const raw=ta?ta.value:CB_CEDULAS_OCR.join('\n');
   const lineas=raw.split(/[\n,;]+/).map(l=>l.trim()).filter(l=>l);
   if(!lineas.length){alert('No hay c\u00e9dulas. Sube las planillas (Paso 1).');return;}
 
-  // Construir mapa de planilla: ced -> {nom, ger, gerPlanilla}
+  // Construir mapa: ced -> {nom, ger} DESDE LA NÓMINA
   const planSet=new Map();
   lineas.forEach(l=>{
     const c=normCed(l);
     if(c&&/^\d+$/.test(c)&&!planSet.has(c)){
-      const ocrEntry=CB_CEDULAS_OCR.find(o=>o.ced===c);
-      planSet.set(c,{ced:c,gerPlanilla:ocrEntry?ocrEntry.gerPlanilla:''});
+      const p=cbBuscarNomina(c);
+      planSet.set(c,{
+        ced:c,
+        nom:p?p.nom:(CB_BIO[c]?CB_BIO[c].name:'(no en n\u00f3mina)'),
+        ger:p?p.ger:'(sin gerencia)'
+      });
     }
   });
-  planSet.forEach((obj,ced)=>{
-    const p=NOMINA.find(n=>normCed(n.ced)===ced);
-    obj.nom=p?p.nom:(CB_BIO[ced]?CB_BIO[ced].name:'(no en n\u00f3mina)');
-    obj.ger=p?p.ger:'';
-    if(!obj.gerPlanilla)obj.gerPlanilla=obj.ger;
-  });
 
-  // Filtrar marcaciones del día seleccionado
+  // Marcaciones del día
   const fp=CB_FECHA.split('-');const dN=+fp[2],mN=+fp[1]-1,aN=+fp[0];
   const amSet=new Set(),pmSet=new Set(),anySet=new Set();
   Object.keys(CB_BIO).forEach(ced=>{CB_BIO[ced].times.forEach(ts=>{
     if(ts.getFullYear()===aN&&ts.getMonth()===mN&&ts.getDate()===dN){anySet.add(ced);if(ts.getHours()<12)amSet.add(ced);else pmSet.add(ced);}
   });});
 
-  // === RESULTADO 1: Sin marca AM (excluir del almuerzo) ===
+  // === EXCLUIR: pidieron almuerzo sin marca AM ===
   const sinMarca=[],corregidos=[];
   planSet.forEach((obj,ced)=>{
     if(!amSet.has(ced)){
       if(!anySet.has(ced)){
         const fix=cbBuscarPorNombre(ced,obj.nom);
         if(fix&&amSet.has(fix)){corregidos.push({cedPlan:ced,cedReal:fix,nom:obj.nom});return;}
-        sinMarca.push({ced,nom:obj.nom,ger:obj.ger,gerPlanilla:obj.gerPlanilla,obs:'No aparece en el biom\u00e9trico del d\u00eda'});
+        sinMarca.push({ced,nom:obj.nom,ger:obj.ger,obs:'No aparece en biom\u00e9trico'});
       }else{
-        sinMarca.push({ced,nom:obj.nom,ger:obj.ger,gerPlanilla:obj.gerPlanilla,obs:'Solo marc\u00f3 PM \u2014 no marc\u00f3 entrada en la ma\u00f1ana'});
+        sinMarca.push({ced,nom:obj.nom,ger:obj.ger,obs:'Solo marc\u00f3 PM \u2014 sin entrada AM'});
       }
     }
   });
 
-  // === RESULTADO 2: Cédulas no reconocidas (descartadas) con info del biométrico ===
+  // === NO RECONOCIDAS: buscar info en biométrico ===
   const noReconocidos=[];
   CB_DESCARTADAS.forEach(d=>{
-    const cedBio=CB_BIO[d.num];
-    let sugerenciaNom='';
-    // Buscar cédula parecida en nómina (1 dígito de diferencia)
-    let cedSugerida='',nomSugerida='';
+    const bio=CB_BIO[d.num];
+    let cedSugerida='',nomSugerida='',estatus,tipo;
+    // Buscar parecida en nómina
     NOMINA.forEach(p=>{
       const cn=normCed(p.ced);
-      if(cn.length===d.num.length){
-        let diff=0;for(let i=0;i<d.num.length;i++)if(d.num[i]!==cn[i])diff++;
-        if(diff===1){cedSugerida=cn;nomSugerida=p.nom;}
-      }
+      if(cn.length===d.num.length){let df=0;for(let i=0;i<d.num.length;i++)if(d.num[i]!==cn[i])df++;if(df===1){cedSugerida=cn;nomSugerida=p.nom;}}
     });
-
-    let estatus,color;
-    if(cedBio){
-      // Está en biométrico pero no en nómina
-      estatus='En biom\u00e9trico como: '+cedBio.name+' \u2014 Posible PERSONAL EXTERNO';
-      color='var(--ambar)';
+    if(bio){
+      estatus='Nombre en biom\u00e9trico: '+bio.name;
+      tipo='externo';
     }else if(cedSugerida){
-      // No está en biométrico pero hay una cédula parecida en nómina
-      estatus='Posible ERROR DE ESC\u00c1NER \u2014 \u00bfSer\u00e1 '+cedSugerida+' ('+nomSugerida+')?';
-      color='var(--azul)';
+      estatus='Posible error de esc\u00e1ner \u2192 \u00bfSer\u00e1 '+cedSugerida+' ('+nomSugerida+')?';
+      tipo='error';
     }else{
-      // No está en ningún lado
-      estatus='No encontrada en n\u00f3mina ni biom\u00e9trico \u2014 Verificar manualmente';
-      color='var(--rojo)';
+      estatus='No encontrada en n\u00f3mina ni biom\u00e9trico';
+      tipo='desconocido';
     }
-
-    noReconocidos.push({
-      ced:d.num,
-      gerPlanilla:d.ger,
-      nombreBio:cedBio?cedBio.name:'',
-      cedSugerida:cedSugerida,
-      nomSugerida:nomSugerida,
-      estatus:estatus,
-      color:color,
-      enBio:!!cedBio
-    });
+    noReconocidos.push({ced:d.num,nombreBio:bio?bio.name:'',cedSugerida,nomSugerida,estatus,tipo});
   });
 
   CB_RESULT={
-    fecha:CB_FECHA,
-    totalPlanilla:planSet.size,
-    totalBio:anySet.size,
-    sinMarca,corregidos,
-    amTotal:amSet.size,pmTotal:pmSet.size,
+    fecha:CB_FECHA,totalPlanilla:planSet.size,totalBio:anySet.size,
+    sinMarca,corregidos,amTotal:amSet.size,pmTotal:pmSet.size,
     noReconocidos
   };
   cbPintarResultados();
@@ -2649,37 +2622,36 @@ function cbPintarResultados(){
   const r=CB_RESULT;
   let html='';
 
-  // ===== KPIs =====
+  // KPIs
   html+='<div class="card"><h2>\ud83d\udcca Resultado del Cruce \u2014 '+fechaBonita(r.fecha)+'</h2>';
   html+='<div class="kpis">';
-  html+='<div class="kpi"><div class="l">Pidieron almuerzo</div><div class="v">'+r.totalPlanilla+'</div></div>';
+  html+='<div class="kpi"><div class="l">Solicitaron almuerzo</div><div class="v">'+r.totalPlanilla+'</div></div>';
   html+='<div class="kpi"><div class="l">Marcaron biom\u00e9trico</div><div class="v">'+r.totalBio+'</div></div>';
   html+='<div class="kpi"><div class="l">Entrada AM</div><div class="v" style="color:var(--verde);">'+r.amTotal+'</div></div>';
-  html+='<div class="kpi"><div class="l">Entrada PM</div><div class="v">'+r.pmTotal+'</div></div>';
-  html+='<div class="kpi" style="background:var(--rojobg);"><div class="l" style="color:var(--rojo);">Excluir del almuerzo</div><div class="v" style="color:var(--rojo);">'+r.sinMarca.length+'</div></div>';
-  html+='<div class="kpi" style="background:var(--ambarbg);"><div class="l" style="color:var(--ambar);">Revisar (no en n\u00f3mina)</div><div class="v" style="color:var(--ambar);">'+r.noReconocidos.length+'</div></div>';
+  html+='<div class="kpi" style="background:var(--rojobg);"><div class="l" style="color:var(--rojo);">EXCLUIR</div><div class="v" style="color:var(--rojo);">'+r.sinMarca.length+'</div></div>';
+  if(r.noReconocidos.length>0)html+='<div class="kpi" style="background:var(--ambarbg);"><div class="l" style="color:var(--ambar);">No reconocidas</div><div class="v" style="color:var(--ambar);">'+r.noReconocidos.length+'</div></div>';
   html+='</div></div>';
 
-  // ===== Cédulas corregidas =====
+  // Corregidas automáticamente
   if(r.corregidos.length>0){
-    html+='<div class="card"><h2 style="color:var(--azul);">\ud83d\udd04 C\u00e9dulas corregidas autom\u00e1ticamente ('+r.corregidos.length+')</h2>';
-    html+='<div class="muted" style="margin-bottom:8px;">El OCR las ley\u00f3 mal pero la persona S\u00cd marc\u00f3 biom\u00e9trico. No se excluyen.</div>';
+    html+='<div class="card"><h2 style="color:var(--azul);">\ud83d\udd04 C\u00e9dulas corregidas ('+r.corregidos.length+')</h2>';
+    html+='<div class="muted" style="margin-bottom:8px;">El OCR las ley\u00f3 mal pero la persona S\u00cd marc\u00f3. No se excluyen.</div>';
     html+='<div class="tablewrap"><table><thead><tr><th>Nombre</th><th>C\u00e9dula OCR</th><th>C\u00e9dula Real</th></tr></thead><tbody>';
     r.corregidos.forEach(c=>{html+='<tr><td>'+c.nom+'</td><td style="text-decoration:line-through;color:var(--rojo);">'+c.cedPlan+'</td><td style="font-weight:bold;color:var(--verde);">'+c.cedReal+'</td></tr>';});
     html+='</tbody></table></div></div>';
   }
 
-  // ===== SECCIÓN 1: EXCLUIR DEL ALMUERZO =====
+  // ===== EXCLUIR DEL ALMUERZO (por gerencia de nómina) =====
   html+='<div class="card">';
   if(r.sinMarca.length===0){
-    html+='<div style="background:var(--verdebg);padding:14px;border-radius:8px;text-align:center;"><b style="color:var(--verde);font-size:16px;">\u2705 Todo cuadra</b><br><span class="muted">Todos los que pidieron almuerzo marcaron entrada AM. No hay nadie que excluir.</span></div>';
+    html+='<div style="background:var(--verdebg);padding:16px;border-radius:8px;text-align:center;"><b style="color:var(--verde);font-size:16px;">\u2705 Todo cuadra</b><br><span class="muted">Todos los que pidieron almuerzo marcaron entrada AM.</span></div>';
   }else{
-    html+='<h2 style="color:var(--rojo);">\u274c EXCLUIR DEL ALMUERZO ('+r.sinMarca.length+' personas)</h2>';
-    html+='<div style="background:var(--rojobg);padding:10px;border-radius:8px;margin-bottom:12px;font-size:13px;">Estas personas pidieron almuerzo pero <b>NO marcaron entrada AM</b> en el biom\u00e9trico. Deben ser sacadas de las planillas de sus respectivas gerencias.</div>';
+    html+='<h2 style="color:var(--rojo);">\u274c EXCLUIR DEL ALMUERZO \u2014 '+r.sinMarca.length+' personas</h2>';
+    html+='<div style="background:var(--rojobg);padding:10px;border-radius:8px;margin-bottom:12px;font-size:13px;">Pidieron almuerzo pero <b>NO marcaron entrada AM</b>. Excluir de las planillas.</div>';
 
-    // Agrupar por gerencia de planilla
+    // Agrupar por gerencia DE LA NÓMINA
     const porGer={};
-    r.sinMarca.forEach(p=>{const g=p.gerPlanilla||p.ger||'(sin gerencia)';if(!porGer[g])porGer[g]=[];porGer[g].push(p);});
+    r.sinMarca.forEach(p=>{const g=p.ger||'(sin gerencia)';if(!porGer[g])porGer[g]=[];porGer[g].push(p);});
     const gers=Object.keys(porGer).sort();
 
     gers.forEach(ger=>{
@@ -2700,42 +2672,27 @@ function cbPintarResultados(){
   }
   html+='</div>';
 
-  // ===== SECCIÓN 2: CÉDULAS NO RECONOCIDAS =====
+  // ===== NO RECONOCIDAS =====
   if(r.noReconocidos.length>0){
     html+='<div class="card">';
-    html+='<h2 style="color:var(--ambar);">\u26a0\ufe0f C\u00c9DULAS NO RECONOCIDAS EN N\u00d3MINA ('+r.noReconocidos.length+')</h2>';
-    html+='<div style="background:var(--ambarbg);padding:10px;border-radius:8px;margin-bottom:12px;font-size:13px;">Estas c\u00e9dulas fueron le\u00eddas por el OCR de las planillas pero <b>no coinciden con la n\u00f3mina</b>. El sistema busc\u00f3 en el biom\u00e9trico para ayudarte a determinar si son:</div>';
-    html+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px;font-size:12px;">';
-    html+='<div style="background:var(--ambarbg);padding:8px;border-radius:6px;border:1px solid var(--ambar);"><b>Personal externo</b><br>Aparece en biom\u00e9trico con nombre pero no en n\u00f3mina</div>';
-    html+='<div style="background:var(--azulbg);padding:8px;border-radius:6px;border:1px solid var(--azul);"><b>Error de esc\u00e1ner</b><br>Hay una c\u00e9dula parecida en n\u00f3mina (1 d\u00edgito diferente)</div>';
-    html+='<div style="background:var(--rojobg);padding:8px;border-radius:6px;border:1px solid var(--rojo);"><b>Verificar</b><br>No aparece en ning\u00fan lado</div>';
-    html+='</div>';
+    html+='<h2 style="color:var(--ambar);">\u26a0\ufe0f C\u00e9dulas no reconocidas ('+r.noReconocidos.length+')</h2>';
+    html+='<div style="background:var(--ambarbg);padding:10px;border-radius:8px;margin-bottom:12px;font-size:13px;">C\u00e9dulas le\u00eddas de las planillas que <b>no est\u00e1n en n\u00f3mina</b>. El sistema busc\u00f3 en el biom\u00e9trico para ayudarte:</div>';
 
-    // Agrupar por gerencia de planilla
-    const nrPorGer={};
-    r.noReconocidos.forEach(p=>{const g=p.gerPlanilla||'(sin gerencia)';if(!nrPorGer[g])nrPorGer[g]=[];nrPorGer[g].push(p);});
-    const nrGers=Object.keys(nrPorGer).sort();
-
-    nrGers.forEach(ger=>{
-      const lista=nrPorGer[ger];
-      html+='<div style="margin-bottom:14px;border:1px solid var(--borde);border-radius:8px;overflow:hidden;">';
-      html+='<div style="background:var(--ambarbg);padding:8px 12px;font-weight:bold;color:var(--ambar);font-size:13px;">\ud83c\udfe2 '+ger+' \u2014 '+lista.length+' no reconocidas</div>';
-      html+='<table><thead><tr><th style="width:35px;">N\u00b0</th><th>C\u00e9dula le\u00edda</th><th>Nombre (biom\u00e9trico)</th><th>C\u00e9dula sugerida</th><th>Nombre (n\u00f3mina)</th><th>Estatus</th></tr></thead><tbody>';
-      lista.forEach((p,i)=>{
-        const bgColor=p.enBio?'var(--ambarbg)':(p.cedSugerida?'var(--azulbg)':'var(--rojobg)');
-        html+='<tr style="background:'+bgColor+';">';
-        html+='<td style="text-align:center;">'+(i+1)+'</td>';
-        html+='<td style="text-align:center;font-weight:bold;font-family:monospace;">'+p.ced+'</td>';
-        html+='<td>'+(p.nombreBio||'<span class="muted">\u2014</span>')+'</td>';
-        html+='<td style="text-align:center;font-family:monospace;">'+(p.cedSugerida||'<span class="muted">\u2014</span>')+'</td>';
-        html+='<td>'+(p.nomSugerida||'<span class="muted">\u2014</span>')+'</td>';
-        html+='<td style="font-size:11px;color:'+p.color+';"><b>'+p.estatus+'</b></td>';
-        html+='</tr>';
-      });
-      html+='</tbody></table></div>';
+    html+='<div class="tablewrap"><table><thead><tr><th style="width:35px;">N\u00b0</th><th>C\u00e9dula le\u00edda</th><th>Nombre (biom\u00e9trico)</th><th>C\u00e9dula sugerida</th><th>Nombre (n\u00f3mina)</th><th>Diagn\u00f3stico</th></tr></thead><tbody>';
+    r.noReconocidos.forEach((p,i)=>{
+      const bg=p.tipo==='externo'?'var(--ambarbg)':(p.tipo==='error'?'var(--azulbg)':'var(--rojobg)');
+      const color=p.tipo==='externo'?'var(--ambar)':(p.tipo==='error'?'var(--azul)':'var(--rojo)');
+      html+='<tr style="background:'+bg+';">';
+      html+='<td style="text-align:center;">'+(i+1)+'</td>';
+      html+='<td style="text-align:center;font-weight:bold;font-family:monospace;">'+p.ced+'</td>';
+      html+='<td>'+(p.nombreBio||'<span class="muted">\u2014</span>')+'</td>';
+      html+='<td style="text-align:center;font-family:monospace;">'+(p.cedSugerida||'<span class="muted">\u2014</span>')+'</td>';
+      html+='<td>'+(p.nomSugerida||'<span class="muted">\u2014</span>')+'</td>';
+      html+='<td style="font-size:11px;color:'+color+';"><b>'+p.estatus+'</b></td>';
+      html+='</tr>';
     });
-
-    html+='<div style="margin-top:14px;"><button class="act" onclick="cbExportNoReconocidosXLSX()">\u2b07 Exportar No Reconocidas a Excel</button></div>';
+    html+='</tbody></table></div>';
+    html+='<div style="margin-top:14px;"><button class="act" onclick="cbExportNoReconocidosXLSX()">\u2b07 Exportar a Excel</button></div>';
     html+='</div>';
   }
 
@@ -2746,42 +2703,35 @@ function cbExportXLSX(){
   if(!CB_RESULT||typeof XLSX==='undefined')return;const r=CB_RESULT;
   const rows=[['CRUCE BIOM\u00c9TRICO vs PLANILLAS DE ALMUERZO \u2014 EXCLUSIONES'],
     ['Fecha: '+fechaBonita(r.fecha)+' | PIM III Choco-Isidora | CVM'],
-    ['Pidieron almuerzo: '+r.totalPlanilla+' | Entrada AM: '+r.amTotal+' | SIN entrada AM: '+r.sinMarca.length],[],
-    ['N\u00b0','C\u00e9dula','Nombre y Apellido','Gerencia (n\u00f3mina)','Planilla de','Motivo']];
-  r.sinMarca.forEach((p,i)=>rows.push([i+1,p.ced,p.nom,p.ger,p.gerPlanilla,p.obs]));
+    ['Solicitaron almuerzo: '+r.totalPlanilla+' | Entrada AM: '+r.amTotal+' | EXCLUIR: '+r.sinMarca.length],[],
+    ['N\u00b0','C\u00e9dula','Nombre y Apellido','Gerencia','Motivo']];
+  r.sinMarca.forEach((p,i)=>rows.push([i+1,p.ced,p.nom,p.ger,p.obs]));
   if(r.corregidos.length>0){rows.push([]);rows.push(['C\u00c9DULAS CORREGIDAS (no se excluyen)']);
     rows.push(['C\u00e9dula OCR','C\u00e9dula real','Nombre']);
     r.corregidos.forEach(c=>rows.push([c.cedPlan,c.cedReal,c.nom]));}
   const wb=XLSX.utils.book_new();const ws=XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols']=[{wch:6},{wch:14},{wch:38},{wch:28},{wch:28},{wch:44}];
-  ws['!merges']=[{s:{r:0,c:0},e:{r:0,c:5}},{s:{r:1,c:0},e:{r:1,c:5}},{s:{r:2,c:0},e:{r:2,c:5}}];
+  ws['!cols']=[{wch:6},{wch:14},{wch:38},{wch:30},{wch:40}];
+  ws['!merges']=[{s:{r:0,c:0},e:{r:0,c:4}},{s:{r:1,c:0},e:{r:1,c:4}},{s:{r:2,c:0},e:{r:2,c:4}}];
   XLSX.utils.book_append_sheet(wb,ws,'Exclusiones');
-
-  // Hoja 2: No reconocidas
   if(r.noReconocidos&&r.noReconocidos.length>0){
-    const rows2=[['C\u00c9DULAS NO RECONOCIDAS EN N\u00d3MINA'],
-      ['Fecha: '+fechaBonita(r.fecha)+' | Requieren revisi\u00f3n manual'],[],
-      ['N\u00b0','C\u00e9dula le\u00edda','Nombre (biom\u00e9trico)','C\u00e9dula sugerida','Nombre (n\u00f3mina)','Planilla de','Estatus']];
-    r.noReconocidos.forEach((p,i)=>rows2.push([i+1,p.ced,p.nombreBio||'',p.cedSugerida||'',p.nomSugerida||'',p.gerPlanilla,p.estatus]));
+    const rows2=[['C\u00c9DULAS NO RECONOCIDAS EN N\u00d3MINA'],['Fecha: '+fechaBonita(r.fecha)],[],
+      ['N\u00b0','C\u00e9dula le\u00edda','Nombre (biom\u00e9trico)','C\u00e9dula sugerida','Nombre (n\u00f3mina)','Diagn\u00f3stico']];
+    r.noReconocidos.forEach((p,i)=>rows2.push([i+1,p.ced,p.nombreBio||'',p.cedSugerida||'',p.nomSugerida||'',p.estatus]));
     const ws2=XLSX.utils.aoa_to_sheet(rows2);
-    ws2['!cols']=[{wch:6},{wch:14},{wch:32},{wch:14},{wch:32},{wch:28},{wch:50}];
-    ws2['!merges']=[{s:{r:0,c:0},e:{r:0,c:6}},{s:{r:1,c:0},e:{r:1,c:6}}];
+    ws2['!cols']=[{wch:6},{wch:14},{wch:32},{wch:14},{wch:32},{wch:50}];
+    ws2['!merges']=[{s:{r:0,c:0},e:{r:0,c:5}},{s:{r:1,c:0},e:{r:1,c:5}}];
     XLSX.utils.book_append_sheet(wb,ws2,'No reconocidas');
   }
-
   XLSX.writeFile(wb,'Cruce_Almuerzo_'+r.fecha+'.xlsx');
 }
 
 function cbExportNoReconocidosXLSX(){
-  if(!CB_RESULT||!CB_RESULT.noReconocidos||typeof XLSX==='undefined')return;
-  const r=CB_RESULT;
-  const rows=[['C\u00c9DULAS NO RECONOCIDAS EN N\u00d3MINA \u2014 REVISI\u00d3N MANUAL'],
-    ['Fecha: '+fechaBonita(r.fecha)+' | PIM III Choco-Isidora | CVM'],[],
-    ['N\u00b0','C\u00e9dula le\u00edda','Nombre (biom\u00e9trico)','C\u00e9dula sugerida','Nombre (n\u00f3mina)','Planilla de','Estatus']];
-  r.noReconocidos.forEach((p,i)=>rows.push([i+1,p.ced,p.nombreBio||'',p.cedSugerida||'',p.nomSugerida||'',p.gerPlanilla,p.estatus]));
+  if(!CB_RESULT||!CB_RESULT.noReconocidos||typeof XLSX==='undefined')return;const r=CB_RESULT;
+  const rows=[['C\u00c9DULAS NO RECONOCIDAS \u2014 REVISI\u00d3N'],['Fecha: '+fechaBonita(r.fecha)],[],
+    ['N\u00b0','C\u00e9dula le\u00edda','Nombre (biom\u00e9trico)','C\u00e9dula sugerida','Nombre (n\u00f3mina)','Diagn\u00f3stico']];
+  r.noReconocidos.forEach((p,i)=>rows.push([i+1,p.ced,p.nombreBio||'',p.cedSugerida||'',p.nomSugerida||'',p.estatus]));
   const wb=XLSX.utils.book_new();const ws=XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols']=[{wch:6},{wch:14},{wch:32},{wch:14},{wch:32},{wch:28},{wch:50}];
-  ws['!merges']=[{s:{r:0,c:0},e:{r:0,c:6}},{s:{r:1,c:0},e:{r:1,c:6}}];
+  ws['!cols']=[{wch:6},{wch:14},{wch:32},{wch:14},{wch:32},{wch:50}];
   XLSX.utils.book_append_sheet(wb,ws,'No reconocidas');
   XLSX.writeFile(wb,'No_Reconocidas_'+r.fecha+'.xlsx');
 }
@@ -2794,6 +2744,7 @@ function cbCopiarCedulas(){
 }
 
 function cbLimpiar(){CB_BIO=null;CB_RESULT=null;CB_CEDULAS_OCR=[];CB_DESCARTADAS=[];CB_DESCARTADAS_POR_GER={};CB_OCR_DONE=false;renderCruceBiom();}
+
 
 </script>
 </body>
