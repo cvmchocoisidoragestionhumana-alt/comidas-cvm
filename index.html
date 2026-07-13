@@ -2263,6 +2263,7 @@ let CB_BIO=null;
 let CB_RESULT=null;
 let CB_FECHA='';
 let CB_CEDULAS_OCR=[];
+let CB_DESCARTADAS=[];
 let CB_OCR_DONE=false;
 let CB_OCR_RUNNING=false;
 
@@ -2279,7 +2280,7 @@ function renderCruceBiom(){
   // Paso 1: Escaner con OCR
   html+='<div style="border:1px solid var(--azul);border-radius:8px;padding:14px;margin-bottom:12px;background:var(--azulbg);">';
   html+='<h3 style="margin:0 0 6px;color:var(--azul);font-size:14px;">Paso 1 \u2014 Sube las planillas escaneadas</h3>';
-  html+='<div class="muted" style="margin-bottom:8px;">Sube las fotos o im\u00e1genes de las planillas de solicitud de comidas (JPG, PNG). El sistema leer\u00e1 las c\u00e9dulas autom\u00e1ticamente. Puede tardar unos segundos por imagen.</div>';
+  html+='<div class="muted" style="margin-bottom:8px;">Sube las fotos o PDF de las planillas de comidas. El sistema leer\u00e1 las c\u00e9dulas autom\u00e1ticamente. <b>Mientras mejor sea la calidad del esc\u00e1ner, m\u00e1s c\u00e9dulas detecta.</b> Puede tardar unos segundos por p\u00e1gina.</div>';
   html+='<input type="file" id="cb-file-scan" accept="image/*,application/pdf" multiple onchange="cbIniciarOCR(this)">';
   html+='<div id="cb-ocr-progress" style="margin-top:10px;"></div>';
   html+='<div id="cb-ocr-result" style="margin-top:10px;"></div>';
@@ -2326,18 +2327,35 @@ async function cbIniciarOCR(input){
         for(let p=1;p<=pdf.numPages;p++){
           document.getElementById('cb-ocr-det').textContent='Convirtiendo PDF: '+file.name+' — página '+p+'/'+pdf.numPages+'...';
           const page=await pdf.getPage(p);
-          const scale=2.0; // alta resolución para OCR
+          const scale=3.0; // resolución alta para OCR
           const viewport=page.getViewport({scale});
           const canvas=document.createElement('canvas');
           canvas.width=viewport.width; canvas.height=viewport.height;
-          await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;
+          const ctx=canvas.getContext('2d');
+          await page.render({canvasContext:ctx,viewport}).promise;
+          // mejorar contraste para OCR: convertir a escala de grises con umbral
+          const imgD=ctx.getImageData(0,0,canvas.width,canvas.height);
+          const px=imgD.data;
+          for(let j=0;j<px.length;j+=4){
+            const gray=px[j]*0.299+px[j+1]*0.587+px[j+2]*0.114;
+            const bw=gray<140?0:255;
+            px[j]=bw;px[j+1]=bw;px[j+2]=bw;
+          }
+          ctx.putImageData(imgD,0,0);
           imagenes.push({name:file.name+' p.'+p, data:canvas.toDataURL('image/png')});
         }
       }catch(e){console.warn('Error PDF:',file.name,e);}
     }else{
-      // Imagen normal
+      // Imagen normal — también mejorar contraste
       const dataURL=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(file);});
-      imagenes.push({name:file.name, data:dataURL});
+      // pre-procesar: cargar en canvas, binarizar
+      const imgEl=await new Promise((res,rej)=>{const im=new Image();im.onload=()=>res(im);im.onerror=rej;im.src=dataURL;});
+      const cv=document.createElement('canvas');cv.width=imgEl.width;cv.height=imgEl.height;
+      const cx=cv.getContext('2d');cx.drawImage(imgEl,0,0);
+      const imd=cx.getImageData(0,0,cv.width,cv.height);const pd=imd.data;
+      for(let j=0;j<pd.length;j+=4){const g=pd[j]*0.299+pd[j+1]*0.587+pd[j+2]*0.114;const b=g<140?0:255;pd[j]=b;pd[j+1]=b;pd[j+2]=b;}
+      cx.putImageData(imd,0,0);
+      imagenes.push({name:file.name, data:cv.toDataURL('image/png')});
     }
   }
 
@@ -2353,15 +2371,30 @@ async function cbIniciarOCR(input){
     workerPath:'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
     corePath:'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
   });
+  // configurar Tesseract para que priorice dígitos
+  await worker.setParameters({
+    tessedit_char_whitelist:'0123456789. ',
+    tessedit_pageseg_mode:'6',
+  });
   const todasCed=new Set();
   for(let i=0;i<tot;i++){
     document.getElementById('cb-ocr-det').textContent='OCR: '+imagenes[i].name+' ('+(i+1)+'/'+tot+')...';
     document.getElementById('cb-ocr-fill').style.width=Math.round((i/tot)*100)+'%';
     try{
       const {data}=await worker.recognize(imagenes[i].data);
-      (data.text.match(/\b\d[\d.\s]{4,12}\d\b/g)||[]).forEach(m=>{
-        const c=m.replace(/[.\s]/g,'').replace(/^0+/,'');
+      // extraer cualquier secuencia que parezca cédula: dígitos con puntos/espacios
+      const txt=data.text;
+      // regex más amplia: captura números con puntos, espacios, de 5+ dígitos
+      const matches=txt.match(/\d[\d.\s,]{3,15}\d/g)||[];
+      matches.forEach(m=>{
+        const c=m.replace(/[.\s,]/g,'').replace(/^0+/,'');
         if(c.length>=6&&c.length<=9&&/^\d+$/.test(c))todasCed.add(c);
+      });
+      // también buscar dígitos sueltos de 6-9 que no tengan puntos
+      const matches2=txt.match(/\b\d{6,9}\b/g)||[];
+      matches2.forEach(m=>{
+        const c=m.replace(/^0+/,'');
+        if(c.length>=6&&c.length<=9)todasCed.add(c);
       });
     }catch(e){console.warn('OCR error:',e);}
     prog.querySelector('b').textContent='Leyendo cédulas con OCR... '+(i+1)+'/'+tot+' páginas';
@@ -2370,10 +2403,11 @@ async function cbIniciarOCR(input){
   await worker.terminate();
 
   const nominaCeds=new Set(NOMINA.map(p=>normCed(p.ced)));
-  const validas=[]; todasCed.forEach(c=>{if(nominaCeds.has(c))validas.push(c);});
-  CB_CEDULAS_OCR=validas; CB_OCR_DONE=true; CB_OCR_RUNNING=false;
-  const desc=todasCed.size-validas.length;
-  prog.innerHTML='<div style="background:var(--verdebg);padding:12px;border-radius:8px;color:var(--verde);"><b>Lectura completa.</b> '+tot+' página(s). '+todasCed.size+' números &rarr; <b>'+validas.length+' cédulas válidas</b> (en nómina)'+(desc>0?' | '+desc+' descartadas':'')+'</div>';
+  const validas=[]; const descartadas=[];
+  todasCed.forEach(c=>{if(nominaCeds.has(c))validas.push(c); else descartadas.push(c);});
+  CB_CEDULAS_OCR=validas; CB_DESCARTADAS=descartadas; CB_OCR_DONE=true; CB_OCR_RUNNING=false;
+  const desc=descartadas.length;
+  prog.innerHTML='<div style="background:var(--verdebg);padding:12px;border-radius:8px;color:var(--verde);"><b>Lectura completa.</b> '+tot+' página(s). '+todasCed.size+' números detectados &rarr; <b>'+validas.length+' cédulas válidas</b> (encontradas en nómina)'+(desc>0?' | '+desc+' no coinciden con nómina (revisa abajo)':'')+'</div>';
   cbMostrarCedulasExtraidas();
   const btn=document.getElementById('cb-btn-cruzar');
   if(btn&&CB_BIO)btn.disabled=false;
@@ -2381,12 +2415,68 @@ async function cbIniciarOCR(input){
 
 function cbMostrarCedulasExtraidas(){
   const res=document.getElementById('cb-ocr-result');if(!res)return;
-  if(CB_CEDULAS_OCR.length===0){res.innerHTML='<div class="note danger">No se detectaron c\u00e9dulas v\u00e1lidas. Verifica que las im\u00e1genes sean legibles.</div>';return;}
-  let html='<div style="border:1px solid var(--verde);border-radius:8px;padding:12px;background:var(--verdebg);">';
-  html+='<h3 style="margin:0 0 6px;color:var(--verde);font-size:14px;">'+CB_CEDULAS_OCR.length+' c\u00e9dulas extra\u00eddas del esc\u00e1ner</h3>';
-  html+='<div class="muted" style="margin-bottom:8px;">Revisa la lista. Si alguna c\u00e9dula est\u00e1 mal, corr\u00edgela. Puedes agregar o quitar l\u00edneas.</div>';
-  html+='<textarea id="cb-cedulas-edit" rows="8" style="width:100%;font-family:monospace;font-size:13px;padding:8px;border:1px solid var(--borde);border-radius:6px;">'+CB_CEDULAS_OCR.join('\n')+'</textarea></div>';
+  let html='';
+
+  // Sección 1: Cédulas válidas
+  if(CB_CEDULAS_OCR.length===0&&CB_DESCARTADAS.length===0){
+    res.innerHTML='<div class="note danger">No se detectaron c\u00e9dulas. Verifica que las im\u00e1genes sean legibles.</div>';return;
+  }
+
+  if(CB_CEDULAS_OCR.length>0){
+    html+='<div style="border:1px solid var(--verde);border-radius:8px;padding:12px;background:var(--verdebg);margin-bottom:12px;">';
+    html+='<h3 style="margin:0 0 6px;color:var(--verde);font-size:14px;">\u2705 '+CB_CEDULAS_OCR.length+' c\u00e9dulas encontradas en n\u00f3mina</h3>';
+    html+='<div class="muted" style="margin-bottom:8px;">Estas c\u00e9dulas fueron le\u00eddas del esc\u00e1ner y coinciden con trabajadores de la n\u00f3mina. Puedes corregir o agregar l\u00edneas.</div>';
+    html+='<textarea id="cb-cedulas-edit" rows="8" style="width:100%;font-family:monospace;font-size:13px;padding:8px;border:1px solid var(--borde);border-radius:6px;">'+CB_CEDULAS_OCR.join('\n')+'</textarea></div>';
+  }
+
+  // Sección 2: Descartadas con sugerencias
+  if(CB_DESCARTADAS.length>0){
+    html+='<div style="border:1px solid var(--ambar);border-radius:8px;padding:12px;background:var(--ambarbg);margin-bottom:12px;">';
+    html+='<h3 style="margin:0 0 6px;color:var(--ambar);font-size:14px;">\u26a0\ufe0f '+CB_DESCARTADAS.length+' n\u00fameros NO coinciden con la n\u00f3mina</h3>';
+    html+='<div class="muted" style="margin-bottom:10px;">El OCR ley\u00f3 estos n\u00fameros pero no corresponden a ninguna c\u00e9dula en la n\u00f3mina. Puede ser un error de lectura. Revisa si alguno es una c\u00e9dula mal le\u00edda y agr\u00e9gala corregida arriba.</div>';
+    html+='<div class="tablewrap" style="max-height:300px;"><table><thead><tr><th>N\u00famero le\u00eddo</th><th>Posible c\u00e9dula correcta (sugerencia)</th><th></th></tr></thead><tbody>';
+    CB_DESCARTADAS.forEach(d=>{
+      const sug=cbSugerirCorreccion(d);
+      html+='<tr><td style="text-align:center;font-family:monospace;font-weight:bold;">'+d+'</td>';
+      if(sug){
+        html+='<td style="color:var(--verde);"><b>'+sug.ced+'</b> \u2014 '+sug.nom+'</td>';
+        html+='<td><button class="act" style="padding:2px 10px;font-size:11px;" onclick="cbAgregarCorreccion(\''+sug.ced+'\')">Agregar</button></td>';
+      }else{
+        html+='<td class="muted">Sin sugerencia (puede ser texto del encabezado, total de planilla u otro n\u00famero)</td><td></td>';
+      }
+      html+='</tr>';
+    });
+    html+='</tbody></table></div></div>';
+  }
+
   res.innerHTML=html;
+}
+
+function cbSugerirCorreccion(cedMal){
+  // buscar en NOMINA una cédula que difiera en máximo 2 dígitos y tenga la misma longitud
+  let mejor=null, mejorDiff=3;
+  NOMINA.forEach(p=>{
+    const ced=normCed(p.ced);
+    if(ced.length!==cedMal.length)return;
+    let diff=0;
+    for(let i=0;i<ced.length;i++)if(ced[i]!==cedMal[i])diff++;
+    if(diff>0&&diff<mejorDiff){
+      mejorDiff=diff;
+      mejor={ced:ced,nom:p.nom,diff:diff};
+    }
+  });
+  return mejor;
+}
+
+function cbAgregarCorreccion(ced){
+  const ta=document.getElementById('cb-cedulas-edit');
+  if(!ta)return;
+  // verificar que no esté ya
+  const lineas=ta.value.split('\n').map(l=>l.trim());
+  if(lineas.indexOf(ced)!==-1){alert('Ya est\u00e1 en la lista.');return;}
+  ta.value=ta.value.trim()+'\n'+ced;
+  CB_CEDULAS_OCR.push(ced);
+  alert('Agregada: '+ced);
 }
 
 function cbCargarBio(input){
@@ -2546,7 +2636,7 @@ function cbCopiarCedulas(){
     alert(CB_RESULT.sinMarca.length+' cedulas copiadas.');});
 }
 
-function cbLimpiar(){CB_BIO=null;CB_RESULT=null;CB_CEDULAS_OCR=[];CB_OCR_DONE=false;renderCruceBiom();}
+function cbLimpiar(){CB_BIO=null;CB_RESULT=null;CB_CEDULAS_OCR=[];CB_DESCARTADAS=[];CB_OCR_DONE=false;renderCruceBiom();}
 </script>
 </body>
 </html>
