@@ -2539,7 +2539,7 @@ function cbEjecutarCruce(){
   const lineas=raw.split(/[\n,;]+/).map(l=>l.trim()).filter(l=>l);
   if(!lineas.length){alert('No hay c\u00e9dulas. Sube las planillas (Paso 1).');return;}
 
-  // Construir mapa: ced -> {nom, ger} DESDE LA NÓMINA
+  // Solo trabajar con cédulas de la planilla que están en nómina
   const planSet=new Map();
   lineas.forEach(l=>{
     const c=normCed(l);
@@ -2553,53 +2553,48 @@ function cbEjecutarCruce(){
     }
   });
 
-  // Marcaciones del día
+  // Marcaciones del día seleccionado
   const fp=CB_FECHA.split('-');const dN=+fp[2],mN=+fp[1]-1,aN=+fp[0];
   const amSet=new Set(),pmSet=new Set(),anySet=new Set();
   Object.keys(CB_BIO).forEach(ced=>{CB_BIO[ced].times.forEach(ts=>{
     if(ts.getFullYear()===aN&&ts.getMonth()===mN&&ts.getDate()===dN){anySet.add(ced);if(ts.getHours()<12)amSet.add(ced);else pmSet.add(ced);}
   });});
 
-  // === EXCLUIR: pidieron almuerzo sin marca AM ===
-  const sinMarca=[],corregidos=[];
+  // Agrupar por gerencia (de nómina) y clasificar cada trabajador
+  const porGer={};
   planSet.forEach((obj,ced)=>{
-    if(!amSet.has(ced)){
-      if(!anySet.has(ced)){
-        const fix=cbBuscarPorNombre(ced,obj.nom);
-        if(fix&&amSet.has(fix)){corregidos.push({cedPlan:ced,cedReal:fix,nom:obj.nom});return;}
-        sinMarca.push({ced,nom:obj.nom,ger:obj.ger,obs:'No aparece en biom\u00e9trico'});
-      }else{
-        sinMarca.push({ced,nom:obj.nom,ger:obj.ger,obs:'Solo marc\u00f3 PM \u2014 sin entrada AM'});
-      }
+    const g=obj.ger;
+    if(!porGer[g])porGer[g]={solicitaron:[],marcaronAM:[],noMarcaron:[]};
+    porGer[g].solicitaron.push(obj);
+    if(amSet.has(ced)){
+      porGer[g].marcaronAM.push(obj);
+    }else{
+      let obs='No aparece en biom\u00e9trico';
+      if(anySet.has(ced))obs='Solo marc\u00f3 PM \u2014 sin entrada AM';
+      porGer[g].noMarcaron.push({ced,nom:obj.nom,ger:g,obs});
     }
   });
 
-  // === NO RECONOCIDAS: buscar info en biométrico ===
+  // No reconocidas (info complementaria)
   const noReconocidos=[];
   CB_DESCARTADAS.forEach(d=>{
     const bio=CB_BIO[d.num];
     let cedSugerida='',nomSugerida='',estatus,tipo;
-    // Buscar parecida en nómina
-    NOMINA.forEach(p=>{
-      const cn=normCed(p.ced);
-      if(cn.length===d.num.length){let df=0;for(let i=0;i<d.num.length;i++)if(d.num[i]!==cn[i])df++;if(df===1){cedSugerida=cn;nomSugerida=p.nom;}}
-    });
-    if(bio){
-      estatus='Nombre en biom\u00e9trico: '+bio.name;
-      tipo='externo';
-    }else if(cedSugerida){
-      estatus='Posible error de esc\u00e1ner \u2192 \u00bfSer\u00e1 '+cedSugerida+' ('+nomSugerida+')?';
-      tipo='error';
-    }else{
-      estatus='No encontrada en n\u00f3mina ni biom\u00e9trico';
-      tipo='desconocido';
-    }
+    NOMINA.forEach(p=>{const cn=normCed(p.ced);if(cn.length===d.num.length){let df=0;for(let i=0;i<d.num.length;i++)if(d.num[i]!==cn[i])df++;if(df===1){cedSugerida=cn;nomSugerida=p.nom;}}});
+    if(bio){estatus='En biom\u00e9trico como: '+bio.name+' (posible personal externo)';tipo='externo';}
+    else if(cedSugerida){estatus='Posible error de esc\u00e1ner \u2192 \u00bfSer\u00e1 '+cedSugerida+' ('+nomSugerida+')?';tipo='error';}
+    else{estatus='No encontrada en n\u00f3mina ni biom\u00e9trico';tipo='desconocido';}
     noReconocidos.push({ced:d.num,nombreBio:bio?bio.name:'',cedSugerida,nomSugerida,estatus,tipo});
   });
 
+  // Totales generales
+  let totalSolicitaron=0,totalMarcaron=0,totalNoMarcaron=0;
+  Object.values(porGer).forEach(g=>{totalSolicitaron+=g.solicitaron.length;totalMarcaron+=g.marcaronAM.length;totalNoMarcaron+=g.noMarcaron.length;});
+
   CB_RESULT={
-    fecha:CB_FECHA,totalPlanilla:planSet.size,totalBio:anySet.size,
-    sinMarca,corregidos,amTotal:amSet.size,pmTotal:pmSet.size,
+    fecha:CB_FECHA,porGer,
+    totalSolicitaron,totalMarcaron,totalNoMarcaron,
+    totalBio:anySet.size,amTotal:amSet.size,pmTotal:pmSet.size,
     noReconocidos
   };
   cbPintarResultados();
@@ -2622,78 +2617,74 @@ function cbPintarResultados(){
   const r=CB_RESULT;
   let html='';
 
-  // KPIs
-  html+='<div class="card"><h2>\ud83d\udcca Resultado del Cruce \u2014 '+fechaBonita(r.fecha)+'</h2>';
+  // === RESUMEN GENERAL ===
+  html+='<div class="card"><h2>\ud83d\udcca Cruce de Almuerzo vs Biom\u00e9trico \u2014 '+fechaBonita(r.fecha)+'</h2>';
   html+='<div class="kpis">';
-  html+='<div class="kpi"><div class="l">Solicitaron almuerzo</div><div class="v">'+r.totalPlanilla+'</div></div>';
-  html+='<div class="kpi"><div class="l">Marcaron biom\u00e9trico</div><div class="v">'+r.totalBio+'</div></div>';
-  html+='<div class="kpi"><div class="l">Entrada AM</div><div class="v" style="color:var(--verde);">'+r.amTotal+'</div></div>';
-  html+='<div class="kpi" style="background:var(--rojobg);"><div class="l" style="color:var(--rojo);">EXCLUIR</div><div class="v" style="color:var(--rojo);">'+r.sinMarca.length+'</div></div>';
-  if(r.noReconocidos.length>0)html+='<div class="kpi" style="background:var(--ambarbg);"><div class="l" style="color:var(--ambar);">No reconocidas</div><div class="v" style="color:var(--ambar);">'+r.noReconocidos.length+'</div></div>';
+  html+='<div class="kpi"><div class="l">Solicitaron almuerzo</div><div class="v">'+r.totalSolicitaron+'</div></div>';
+  html+='<div class="kpi" style="background:var(--verdebg);"><div class="l" style="color:var(--verde);">Marcaron AM</div><div class="v" style="color:var(--verde);">'+r.totalMarcaron+'</div></div>';
+  html+='<div class="kpi" style="background:var(--rojobg);"><div class="l" style="color:var(--rojo);">NO marcaron AM</div><div class="v" style="color:var(--rojo);">'+r.totalNoMarcaron+'</div></div>';
   html+='</div></div>';
 
-  // Corregidas automáticamente
-  if(r.corregidos.length>0){
-    html+='<div class="card"><h2 style="color:var(--azul);">\ud83d\udd04 C\u00e9dulas corregidas ('+r.corregidos.length+')</h2>';
-    html+='<div class="muted" style="margin-bottom:8px;">El OCR las ley\u00f3 mal pero la persona S\u00cd marc\u00f3. No se excluyen.</div>';
-    html+='<div class="tablewrap"><table><thead><tr><th>Nombre</th><th>C\u00e9dula OCR</th><th>C\u00e9dula Real</th></tr></thead><tbody>';
-    r.corregidos.forEach(c=>{html+='<tr><td>'+c.nom+'</td><td style="text-decoration:line-through;color:var(--rojo);">'+c.cedPlan+'</td><td style="font-weight:bold;color:var(--verde);">'+c.cedReal+'</td></tr>';});
-    html+='</tbody></table></div></div>';
-  }
+  // === DETALLE POR GERENCIA ===
+  const gers=Object.keys(r.porGer).sort();
 
-  // ===== EXCLUIR DEL ALMUERZO (por gerencia de nómina) =====
-  html+='<div class="card">';
-  if(r.sinMarca.length===0){
-    html+='<div style="background:var(--verdebg);padding:16px;border-radius:8px;text-align:center;"><b style="color:var(--verde);font-size:16px;">\u2705 Todo cuadra</b><br><span class="muted">Todos los que pidieron almuerzo marcaron entrada AM.</span></div>';
+  if(r.totalNoMarcaron===0){
+    html+='<div class="card"><div style="background:var(--verdebg);padding:16px;border-radius:8px;text-align:center;"><b style="color:var(--verde);font-size:16px;">\u2705 Todo cuadra</b><br><span class="muted">Todos los que solicitaron almuerzo marcaron entrada AM. No hay nadie que excluir.</span></div></div>';
   }else{
-    html+='<h2 style="color:var(--rojo);">\u274c EXCLUIR DEL ALMUERZO \u2014 '+r.sinMarca.length+' personas</h2>';
-    html+='<div style="background:var(--rojobg);padding:10px;border-radius:8px;margin-bottom:12px;font-size:13px;">Pidieron almuerzo pero <b>NO marcaron entrada AM</b>. Excluir de las planillas.</div>';
-
-    // Agrupar por gerencia DE LA NÓMINA
-    const porGer={};
-    r.sinMarca.forEach(p=>{const g=p.ger||'(sin gerencia)';if(!porGer[g])porGer[g]=[];porGer[g].push(p);});
-    const gers=Object.keys(porGer).sort();
+    html+='<div class="card">';
+    html+='<h2 style="color:var(--rojo);">\u274c '+r.totalNoMarcaron+' trabajadores para EXCLUIR del almuerzo</h2>';
+    html+='<div style="background:var(--rojobg);padding:10px;border-radius:8px;margin-bottom:14px;font-size:13px;">Detalle por gerencia: cu\u00e1ntos solicitaron, cu\u00e1ntos marcaron y <b>qui\u00e9nes NO marcaron entrada AM</b>.</div>';
 
     gers.forEach(ger=>{
-      const lista=porGer[ger];
-      html+='<div style="margin-bottom:14px;border:1px solid var(--borde);border-radius:8px;overflow:hidden;">';
-      html+='<div style="background:var(--azulbg);padding:8px 12px;font-weight:bold;color:var(--azul);font-size:13px;">\ud83c\udfe2 '+ger+' \u2014 '+lista.length+' para excluir</div>';
-      html+='<table><thead><tr><th style="width:35px;">N\u00b0</th><th>C\u00e9dula</th><th>Nombre y Apellido</th><th>Motivo</th></tr></thead><tbody>';
-      lista.forEach((p,i)=>{
-        html+='<tr style="background:var(--rojobg);"><td style="text-align:center;">'+(i+1)+'</td><td style="text-align:center;font-weight:bold;">'+p.ced+'</td><td>'+p.nom+'</td><td style="color:var(--rojo);font-size:11px;"><b>'+p.obs+'</b></td></tr>';
-      });
-      html+='</tbody></table></div>';
+      const g=r.porGer[ger];
+      const hayExcluir=g.noMarcaron.length>0;
+
+      html+='<div style="margin-bottom:16px;border:1px solid '+(hayExcluir?'var(--rojo)':'var(--verde)');
+      html+=';border-radius:8px;overflow:hidden;">';
+
+      // Encabezado de la gerencia con totales
+      html+='<div style="background:'+(hayExcluir?'var(--rojobg)':'var(--verdebg)');
+      html+=';padding:10px 14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">';
+      html+='<div><b style="font-size:14px;color:var(--azul);">\ud83c\udfe2 '+ger+'</b></div>';
+      html+='<div style="display:flex;gap:12px;font-size:13px;">';
+      html+='<span>Solicitaron: <b>'+g.solicitaron.length+'</b></span>';
+      html+='<span style="color:var(--verde);">Marcaron AM: <b>'+g.marcaronAM.length+'</b></span>';
+      if(hayExcluir)html+='<span style="color:var(--rojo);font-weight:bold;">NO marcaron: '+g.noMarcaron.length+'</span>';
+      else html+='<span style="color:var(--verde);">\u2705 Todos marcaron</span>';
+      html+='</div></div>';
+
+      // Tabla de los que NO marcaron
+      if(hayExcluir){
+        html+='<table><thead><tr><th style="width:35px;">N\u00b0</th><th>C\u00e9dula</th><th>Nombre y Apellido</th><th>Motivo</th></tr></thead><tbody>';
+        g.noMarcaron.forEach((p,i)=>{
+          html+='<tr><td style="text-align:center;">'+(i+1)+'</td><td style="text-align:center;font-weight:bold;">'+p.ced+'</td><td>'+p.nom+'</td><td style="color:var(--rojo);font-size:11px;"><b>'+p.obs+'</b></td></tr>';
+        });
+        html+='</tbody></table>';
+      }
+      html+='</div>';
     });
 
     html+='<div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;">';
     html+='<button class="act prim" onclick="cbExportXLSX()">\u2b07 Exportar a Excel</button>';
-    html+='<button class="act" onclick="cbCopiarCedulas()">\ud83d\udccb Copiar c\u00e9dulas</button>';
+    html+='<button class="act" onclick="cbCopiarCedulas()">\ud83d\udccb Copiar c\u00e9dulas para excluir</button>';
+    html+='</div>';
     html+='</div>';
   }
-  html+='</div>';
 
-  // ===== NO RECONOCIDAS =====
+  // === NO RECONOCIDAS (colapsable, secundario) ===
   if(r.noReconocidos.length>0){
-    html+='<div class="card">';
-    html+='<h2 style="color:var(--ambar);">\u26a0\ufe0f C\u00e9dulas no reconocidas ('+r.noReconocidos.length+')</h2>';
-    html+='<div style="background:var(--ambarbg);padding:10px;border-radius:8px;margin-bottom:12px;font-size:13px;">C\u00e9dulas le\u00eddas de las planillas que <b>no est\u00e1n en n\u00f3mina</b>. El sistema busc\u00f3 en el biom\u00e9trico para ayudarte:</div>';
-
-    html+='<div class="tablewrap"><table><thead><tr><th style="width:35px;">N\u00b0</th><th>C\u00e9dula le\u00edda</th><th>Nombre (biom\u00e9trico)</th><th>C\u00e9dula sugerida</th><th>Nombre (n\u00f3mina)</th><th>Diagn\u00f3stico</th></tr></thead><tbody>';
+    html+='<details class="card" style="cursor:default;">';
+    html+='<summary style="cursor:pointer;color:var(--ambar);font-weight:bold;">\u26a0\ufe0f '+r.noReconocidos.length+' c\u00e9dulas le\u00eddas que no est\u00e1n en n\u00f3mina <span class="muted" style="font-weight:normal;">(clic para ver)</span></summary>';
+    html+='<div style="margin-top:10px;">';
+    html+='<div class="tablewrap"><table><thead><tr><th>N\u00b0</th><th>C\u00e9dula</th><th>Nombre (biom\u00e9trico)</th><th>Sugerencia</th><th>Diagn\u00f3stico</th></tr></thead><tbody>';
     r.noReconocidos.forEach((p,i)=>{
       const bg=p.tipo==='externo'?'var(--ambarbg)':(p.tipo==='error'?'var(--azulbg)':'var(--rojobg)');
       const color=p.tipo==='externo'?'var(--ambar)':(p.tipo==='error'?'var(--azul)':'var(--rojo)');
-      html+='<tr style="background:'+bg+';">';
-      html+='<td style="text-align:center;">'+(i+1)+'</td>';
-      html+='<td style="text-align:center;font-weight:bold;font-family:monospace;">'+p.ced+'</td>';
-      html+='<td>'+(p.nombreBio||'<span class="muted">\u2014</span>')+'</td>';
-      html+='<td style="text-align:center;font-family:monospace;">'+(p.cedSugerida||'<span class="muted">\u2014</span>')+'</td>';
-      html+='<td>'+(p.nomSugerida||'<span class="muted">\u2014</span>')+'</td>';
-      html+='<td style="font-size:11px;color:'+color+';"><b>'+p.estatus+'</b></td>';
-      html+='</tr>';
+      html+='<tr style="background:'+bg+';"><td>'+(i+1)+'</td><td style="font-family:monospace;font-weight:bold;">'+p.ced+'</td><td>'+(p.nombreBio||'\u2014')+'</td><td>'+(p.cedSugerida?p.cedSugerida+' ('+p.nomSugerida+')':'\u2014')+'</td><td style="font-size:11px;color:'+color+';"><b>'+p.estatus+'</b></td></tr>';
     });
     html+='</tbody></table></div>';
-    html+='<div style="margin-top:14px;"><button class="act" onclick="cbExportNoReconocidosXLSX()">\u2b07 Exportar a Excel</button></div>';
-    html+='</div>';
+    html+='<div style="margin-top:8px;"><button class="act" onclick="cbExportNoReconocidosXLSX()">\u2b07 Exportar a Excel</button></div>';
+    html+='</div></details>';
   }
 
   cont.innerHTML=html;
@@ -2701,25 +2692,28 @@ function cbPintarResultados(){
 
 function cbExportXLSX(){
   if(!CB_RESULT||typeof XLSX==='undefined')return;const r=CB_RESULT;
-  const rows=[['CRUCE BIOM\u00c9TRICO vs PLANILLAS DE ALMUERZO \u2014 EXCLUSIONES'],
-    ['Fecha: '+fechaBonita(r.fecha)+' | PIM III Choco-Isidora | CVM'],
-    ['Solicitaron almuerzo: '+r.totalPlanilla+' | Entrada AM: '+r.amTotal+' | EXCLUIR: '+r.sinMarca.length],[],
-    ['N\u00b0','C\u00e9dula','Nombre y Apellido','Gerencia','Motivo']];
-  r.sinMarca.forEach((p,i)=>rows.push([i+1,p.ced,p.nom,p.ger,p.obs]));
-  if(r.corregidos.length>0){rows.push([]);rows.push(['C\u00c9DULAS CORREGIDAS (no se excluyen)']);
-    rows.push(['C\u00e9dula OCR','C\u00e9dula real','Nombre']);
-    r.corregidos.forEach(c=>rows.push([c.cedPlan,c.cedReal,c.nom]));}
-  const wb=XLSX.utils.book_new();const ws=XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols']=[{wch:6},{wch:14},{wch:38},{wch:30},{wch:40}];
+  const wb=XLSX.utils.book_new();
+  // Hoja 1: Resumen por gerencia + exclusiones
+  const rows=[['CRUCE BIOM\u00c9TRICO vs ALMUERZO \u2014 '+fechaBonita(r.fecha)],
+    ['PIM III Choco-Isidora | CVM'],
+    ['Solicitaron: '+r.totalSolicitaron+' | Marcaron AM: '+r.totalMarcaron+' | NO marcaron: '+r.totalNoMarcaron],[],
+    ['GERENCIA','SOLICITARON','MARCARON AM','NO MARCARON']];
+  const gers=Object.keys(r.porGer).sort();
+  gers.forEach(ger=>{const g=r.porGer[ger];rows.push([ger,g.solicitaron.length,g.marcaronAM.length,g.noMarcaron.length]);});
+  rows.push([]);rows.push(['DETALLE: TRABAJADORES QUE NO MARCARON AM']);
+  rows.push(['N\u00b0','C\u00e9dula','Nombre y Apellido','Gerencia','Motivo']);
+  let n=0;
+  gers.forEach(ger=>{r.porGer[ger].noMarcaron.forEach(p=>{n++;rows.push([n,p.ced,p.nom,p.ger,p.obs]);});});
+  const ws=XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols']=[{wch:8},{wch:16},{wch:38},{wch:30},{wch:35}];
   ws['!merges']=[{s:{r:0,c:0},e:{r:0,c:4}},{s:{r:1,c:0},e:{r:1,c:4}},{s:{r:2,c:0},e:{r:2,c:4}}];
-  XLSX.utils.book_append_sheet(wb,ws,'Exclusiones');
+  XLSX.utils.book_append_sheet(wb,ws,'Cruce Almuerzo');
+
+  // Hoja 2: No reconocidas
   if(r.noReconocidos&&r.noReconocidos.length>0){
-    const rows2=[['C\u00c9DULAS NO RECONOCIDAS EN N\u00d3MINA'],['Fecha: '+fechaBonita(r.fecha)],[],
-      ['N\u00b0','C\u00e9dula le\u00edda','Nombre (biom\u00e9trico)','C\u00e9dula sugerida','Nombre (n\u00f3mina)','Diagn\u00f3stico']];
-    r.noReconocidos.forEach((p,i)=>rows2.push([i+1,p.ced,p.nombreBio||'',p.cedSugerida||'',p.nomSugerida||'',p.estatus]));
-    const ws2=XLSX.utils.aoa_to_sheet(rows2);
-    ws2['!cols']=[{wch:6},{wch:14},{wch:32},{wch:14},{wch:32},{wch:50}];
-    ws2['!merges']=[{s:{r:0,c:0},e:{r:0,c:5}},{s:{r:1,c:0},e:{r:1,c:5}}];
+    const rows2=[['C\u00c9DULAS NO RECONOCIDAS'],[],['N\u00b0','C\u00e9dula','Nombre (biom\u00e9trico)','Sugerencia','Diagn\u00f3stico']];
+    r.noReconocidos.forEach((p,i)=>rows2.push([i+1,p.ced,p.nombreBio||'',p.cedSugerida?(p.cedSugerida+' ('+p.nomSugerida+')'):'',p.estatus]));
+    const ws2=XLSX.utils.aoa_to_sheet(rows2);ws2['!cols']=[{wch:6},{wch:14},{wch:32},{wch:32},{wch:50}];
     XLSX.utils.book_append_sheet(wb,ws2,'No reconocidas');
   }
   XLSX.writeFile(wb,'Cruce_Almuerzo_'+r.fecha+'.xlsx');
@@ -2727,23 +2721,25 @@ function cbExportXLSX(){
 
 function cbExportNoReconocidosXLSX(){
   if(!CB_RESULT||!CB_RESULT.noReconocidos||typeof XLSX==='undefined')return;const r=CB_RESULT;
-  const rows=[['C\u00c9DULAS NO RECONOCIDAS \u2014 REVISI\u00d3N'],['Fecha: '+fechaBonita(r.fecha)],[],
-    ['N\u00b0','C\u00e9dula le\u00edda','Nombre (biom\u00e9trico)','C\u00e9dula sugerida','Nombre (n\u00f3mina)','Diagn\u00f3stico']];
-  r.noReconocidos.forEach((p,i)=>rows.push([i+1,p.ced,p.nombreBio||'',p.cedSugerida||'',p.nomSugerida||'',p.estatus]));
-  const wb=XLSX.utils.book_new();const ws=XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols']=[{wch:6},{wch:14},{wch:32},{wch:14},{wch:32},{wch:50}];
+  const rows=[['C\u00c9DULAS NO RECONOCIDAS \u2014 '+fechaBonita(r.fecha)],[],['N\u00b0','C\u00e9dula','Nombre (biom\u00e9trico)','Sugerencia','Diagn\u00f3stico']];
+  r.noReconocidos.forEach((p,i)=>rows.push([i+1,p.ced,p.nombreBio||'',p.cedSugerida?(p.cedSugerida+' ('+p.nomSugerida+')'):'',p.estatus]));
+  const wb=XLSX.utils.book_new();const ws=XLSX.utils.aoa_to_sheet(rows);ws['!cols']=[{wch:6},{wch:14},{wch:32},{wch:32},{wch:50}];
   XLSX.utils.book_append_sheet(wb,ws,'No reconocidas');
   XLSX.writeFile(wb,'No_Reconocidas_'+r.fecha+'.xlsx');
 }
 
 function cbCopiarCedulas(){
-  if(!CB_RESULT)return;const txt=CB_RESULT.sinMarca.map(p=>p.ced).join('\n');
-  navigator.clipboard.writeText(txt).then(()=>alert(CB_RESULT.sinMarca.length+' c\u00e9dulas copiadas.')).catch(()=>{
+  if(!CB_RESULT)return;
+  const lista=[];
+  Object.keys(CB_RESULT.porGer).sort().forEach(ger=>{CB_RESULT.porGer[ger].noMarcaron.forEach(p=>lista.push(p.ced));});
+  const txt=lista.join('\n');
+  navigator.clipboard.writeText(txt).then(()=>alert(lista.length+' c\u00e9dulas copiadas.')).catch(()=>{
     const ta=document.createElement('textarea');ta.value=txt;document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);
-    alert(CB_RESULT.sinMarca.length+' c\u00e9dulas copiadas.');});
+    alert(lista.length+' c\u00e9dulas copiadas.');});
 }
 
 function cbLimpiar(){CB_BIO=null;CB_RESULT=null;CB_CEDULAS_OCR=[];CB_DESCARTADAS=[];CB_DESCARTADAS_POR_GER={};CB_OCR_DONE=false;renderCruceBiom();}
+
 
 
 </script>
